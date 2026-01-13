@@ -1,0 +1,16 @@
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      optimize:
+        description: 'Optimization level'
+        type: string
+        default: 'ReleaseFast'
+
+jobs:
+  build:
+    uses: e-jerk/.github/.github/workflows/build.yml@main
+    with:
+      binary_name: sed
+      optimize: ${{ inputs.optimize }}

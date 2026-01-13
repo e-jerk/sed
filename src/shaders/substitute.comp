@@ -1,0 +1,221 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Configuration for substitution operation
+// Optimized with uvec4 vector types for SIMD operations
+
+#include "string_ops.glsl"
+
+layout(set = 0, binding = 0) uniform SubstituteConfig {
+    uint text_len;           // Length of input text
+    uint pattern_len;        // Length of pattern to match
+    uint replacement_len;    // Length of replacement string
+    uint flags;              // Flags (case insensitive, global, etc.)
+    uint max_matches;        // Maximum number of matches to store
+    uint num_threads;        // Number of GPU threads (for line-based operations, this is num_lines)
+    uint _pad1;
+    uint _pad2;
+} config;
+
+// Match result
+struct MatchResult {
+    uint start;              // Start position in text
+    uint end_pos;            // End position in text
+    uint line_num;           // Line number (0-indexed)
+    uint _pad;
+};
+
+// Flags
+const uint FLAG_CASE_INSENSITIVE = 1;
+const uint FLAG_GLOBAL = 2;           // Replace all occurrences
+const uint FLAG_FIRST_ONLY = 4;       // Replace first occurrence only (per line)
+const uint FLAG_LINE_MODE = 8;        // Process line by line
+
+// Buffers
+layout(set = 0, binding = 1) readonly buffer Text {
+    uint text_data[];
+};
+
+layout(set = 0, binding = 2) readonly buffer Pattern {
+    uint pattern_data[];
+};
+
+layout(set = 0, binding = 3) writeonly buffer Results {
+    MatchResult results[];
+};
+
+layout(set = 0, binding = 4) buffer Counters {
+    uint match_count;
+    uint total_matches;
+};
+
+// For line-based operations
+layout(set = 0, binding = 5) buffer LineMatches {
+    uint line_matches[];
+};
+
+layout(set = 0, binding = 6) readonly buffer LineOffsets {
+    uint line_offsets[];
+};
+
+layout(set = 0, binding = 7) readonly buffer LineLengths {
+    uint line_lengths[];
+};
+
+// Buffer access functions (specific to this shader's buffer layout)
+
+uint read_text_char(uint byte_index) {
+    uint word_index = byte_index >> 2u;
+    uint byte_offset = byte_index & 3u;
+    uint word = text_data[word_index];
+    return (word >> (byte_offset << 3u)) & 0xFFu;
+}
+
+uint read_pattern_char(uint byte_index) {
+    uint word_index = byte_index >> 2u;
+    uint byte_offset = byte_index & 3u;
+    uint word = pattern_data[word_index];
+    return (word >> (byte_offset << 3u)) & 0xFFu;
+}
+
+// Get 4 bytes as a packed word from text buffer at arbitrary byte position
+uint get_text_word_at(uint byte_pos) {
+    uint word_idx = byte_pos >> 2u;
+    uint byte_offset = byte_pos & 3u;
+
+    if (byte_offset == 0u) {
+        return text_data[word_idx];
+    }
+
+    // Unaligned access - combine two words
+    uint w0 = text_data[word_idx];
+    uint w1 = text_data[word_idx + 1u];
+    uint shift = byte_offset << 3u;
+    return (w0 >> shift) | (w1 << (32u - shift));
+}
+
+// Get 4 bytes as a packed word from pattern buffer
+uint get_pattern_word_at(uint byte_pos) {
+    uint word_idx = byte_pos >> 2u;
+    uint byte_offset = byte_pos & 3u;
+
+    if (byte_offset == 0u) {
+        return pattern_data[word_idx];
+    }
+
+    uint w0 = pattern_data[word_idx];
+    uint w1 = pattern_data[word_idx + 1u];
+    uint shift = byte_offset << 3u;
+    return (w0 >> shift) | (w1 << (32u - shift));
+}
+
+// Vectorized pattern matching at position
+bool match_at_position(uint pos, uint pattern_len, bool case_insensitive) {
+    uint remaining = pattern_len;
+    uint offset = 0u;
+
+    // Process 16 bytes (4 words) at a time using uvec4
+    while (remaining >= 16u) {
+        uvec4 text_words = uvec4(
+            get_text_word_at(pos + offset),
+            get_text_word_at(pos + offset + 4u),
+            get_text_word_at(pos + offset + 8u),
+            get_text_word_at(pos + offset + 12u)
+        );
+        uvec4 pattern_words = uvec4(
+            get_pattern_word_at(offset),
+            get_pattern_word_at(offset + 4u),
+            get_pattern_word_at(offset + 8u),
+            get_pattern_word_at(offset + 12u)
+        );
+
+        if (!match_uvec4(text_words, pattern_words, case_insensitive)) {
+            return false;
+        }
+        offset += 16u;
+        remaining -= 16u;
+    }
+
+    // Process 4 bytes at a time
+    while (remaining >= 4u) {
+        uint text_word = get_text_word_at(pos + offset);
+        uint pattern_word = get_pattern_word_at(offset);
+
+        if (!match_word(text_word, pattern_word, case_insensitive)) {
+            return false;
+        }
+        offset += 4u;
+        remaining -= 4u;
+    }
+
+    // Process remaining bytes one at a time
+    while (remaining > 0u) {
+        uint tc = read_text_char(pos + offset);
+        uint pc = read_pattern_char(offset);
+        if (!char_match(pc, tc, case_insensitive)) {
+            return false;
+        }
+        offset++;
+        remaining--;
+    }
+
+    return true;
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    uint num_threads = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+
+    // Line-based operation mode
+    if ((config.flags & FLAG_LINE_MODE) != 0u) {
+        if (gid >= config.num_threads) return;
+
+        uint line_start = line_offsets[gid];
+        uint line_len = line_lengths[gid];
+
+        bool case_insensitive = (config.flags & FLAG_CASE_INSENSITIVE) != 0u;
+
+        // Search for pattern in this line using vectorized matching
+        bool found = false;
+        for (uint pos = 0u; pos + config.pattern_len <= line_len && !found; pos++) {
+            if (match_at_position(line_start + pos, config.pattern_len, case_insensitive)) {
+                found = true;
+            }
+        }
+
+        line_matches[gid] = found ? 1u : 0u;
+        return;
+    }
+
+    // Match finding mode with chunked processing
+    uint searchable_len = config.text_len - config.pattern_len + 1u;
+    if (searchable_len == 0u || config.pattern_len == 0u) return;
+
+    // Calculate this thread's search range
+    uint chunk_size = (searchable_len + num_threads - 1u) / num_threads;
+    uint start_pos = gid * chunk_size;
+    uint end_pos = min(start_pos + chunk_size, searchable_len);
+
+    if (start_pos >= searchable_len) return;
+
+    bool case_insensitive = (config.flags & FLAG_CASE_INSENSITIVE) != 0u;
+
+    // Process all positions in this thread's chunk
+    for (uint pos = start_pos; pos < end_pos; pos++) {
+        // Use vectorized pattern matching
+        if (match_at_position(pos, config.pattern_len, case_insensitive)) {
+            // Atomically increment and get match index
+            uint idx = atomicAdd(match_count, 1u);
+            atomicAdd(total_matches, 1u);
+
+            if (idx < config.max_matches) {
+                results[idx].start = pos;
+                results[idx].end_pos = pos + config.pattern_len;
+                // Line number computed on host side for efficiency
+                results[idx].line_num = 0u;
+            }
+        }
+    }
+}

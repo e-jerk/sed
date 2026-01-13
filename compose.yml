@@ -1,0 +1,10 @@
+services:
+  sed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BINARY_NAME: sed
+    volumes:
+      - .:/workdir:ro
+    working_dir: /workdir
