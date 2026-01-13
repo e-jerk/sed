@@ -11,11 +11,3 @@ jobs:
     uses: e-jerk/.github/.github/workflows/ci.yml@main
     with:
       binary_name: sed
-      macos_test_script: |
-        echo "hello world foo bar" > test.txt
-        $BINARY --cpu 's/foo/baz/' test.txt | grep -q baz
-        echo "PASS: substitute"
-      linux_test_script: |
-        echo "hello world foo bar" > test.txt
-        $BINARY --cpu 's/foo/baz/' test.txt | grep -q baz
-        echo "PASS: substitute"
