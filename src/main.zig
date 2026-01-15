@@ -2,6 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const gpu = @import("gpu");
 const cpu = @import("cpu");
+const cpu_gnu = @import("cpu_gnu");
 
 const SubstituteOptions = gpu.SubstituteOptions;
 
@@ -10,6 +11,7 @@ const BackendMode = enum {
     auto, // Automatically select based on workload
     gpu_mode, // Auto-select best GPU (Metal on macOS, else Vulkan)
     cpu_mode,
+    cpu_gnu, // GNU sed reference implementation
     metal,
     vulkan,
 };
@@ -50,6 +52,7 @@ pub fn main() !void {
     var verbose = false;
     var in_place = false;
     var suppress_output = false;
+    var use_extended_regex = false; // ERE mode (-E/-r)
 
     // Parse arguments
     var i: usize = 1;
@@ -62,10 +65,14 @@ pub fn main() !void {
             }
         } else if (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "--silent")) {
             suppress_output = true;
+        } else if (std.mem.eql(u8, arg, "-E") or std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "--regexp-extended")) {
+            use_extended_regex = true;
         } else if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--in-place")) {
             in_place = true;
-        } else if (std.mem.eql(u8, arg, "--cpu")) {
+        } else if (std.mem.eql(u8, arg, "--cpu") or std.mem.eql(u8, arg, "--cpu-optimized")) {
             backend_mode = .cpu_mode;
+        } else if (std.mem.eql(u8, arg, "--gnu")) {
+            backend_mode = .cpu_gnu;
         } else if (std.mem.eql(u8, arg, "--gpu")) {
             backend_mode = .gpu_mode;
         } else if (std.mem.eql(u8, arg, "--metal")) {
@@ -102,10 +109,11 @@ pub fn main() !void {
     const read_stdin = files.items.len == 0;
 
     // Parse sed expression
-    const cmd = parseSedExpression(sed_expr) catch |err| {
+    var cmd = parseSedExpression(sed_expr) catch |err| {
         std.debug.print("Error parsing expression: {}\n", .{err});
         return;
     };
+    cmd.options.extended = use_extended_regex;
 
     if (verbose) {
         std.debug.print("sed - GPU-accelerated sed\n", .{});
@@ -133,6 +141,37 @@ pub fn main() !void {
     }
 }
 
+/// Choose appropriate find function based on options (literal vs regex)
+fn doFindMatches(text: []const u8, pattern: []const u8, options: SubstituteOptions, allocator: std.mem.Allocator) !gpu.SubstituteResult {
+    if (options.extended) {
+        return cpu.findMatchesRegex(text, pattern, options, allocator);
+    } else {
+        // For BRE mode (default), also use regex for special characters
+        // Check if pattern contains regex metacharacters
+        var has_meta = false;
+        var i: usize = 0;
+        while (i < pattern.len) : (i += 1) {
+            const c = pattern[i];
+            if (c == '.' or c == '*' or c == '^' or c == '$' or c == '[') {
+                has_meta = true;
+                break;
+            }
+            if (c == '\\' and i + 1 < pattern.len) {
+                const next = pattern[i + 1];
+                if (next == '+' or next == '?' or next == '|' or next == '(' or next == ')' or next == '{' or next == '}') {
+                    has_meta = true;
+                    break;
+                }
+                i += 1;
+            }
+        }
+        if (has_meta) {
+            return cpu.findMatchesRegex(text, pattern, options, allocator);
+        }
+        return cpu.findMatches(text, pattern, options, allocator);
+    }
+}
+
 fn processStdin(allocator: std.mem.Allocator, cmd: SedCommand, backend_mode: BackendMode, verbose: bool, suppress_output: bool) !void {
     // Read all stdin into a buffer
     var stdin_list: std.ArrayListUnmanaged(u8) = .{};
@@ -157,10 +196,11 @@ fn processStdin(allocator: std.mem.Allocator, cmd: SedCommand, backend_mode: Bac
     }
 
     // Select backend
+    // Note: cpu_gnu maps to .cpu backend but uses cpu_gnu module for matching
     const backend: gpu.Backend = switch (backend_mode) {
         .auto => selectOptimalBackend(cmd.pattern.len, file_size),
         .gpu_mode => if (build_options.is_macos) .metal else .vulkan,
-        .cpu_mode => .cpu,
+        .cpu_mode, .cpu_gnu => .cpu,
         .metal => .metal,
         .vulkan => .vulkan,
     };
@@ -183,26 +223,26 @@ fn processSubstituteStdin(allocator: std.mem.Allocator, text: []const u8, cmd: S
         .metal => blk: {
             if (build_options.is_macos) {
                 const substituter = gpu.metal.MetalSubstituter.init(allocator) catch {
-                    break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                    break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
                 defer substituter.deinit();
                 break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
-                    break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                    break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
             } else {
-                break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             }
         },
         .vulkan => blk: {
             const substituter = gpu.vulkan.VulkanSubstituter.init(allocator) catch {
-                break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
             defer substituter.deinit();
             break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
-                break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
         },
-        else => try cpu.findMatches(text, cmd.pattern, cmd.options, allocator),
+        else => try doFindMatches(text, cmd.pattern, cmd.options, allocator),
     };
     defer result.deinit();
 
@@ -368,10 +408,11 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, cmd: SedComma
     defer allocator.free(text);
 
     // Select backend
+    // Note: cpu_gnu maps to .cpu backend but uses cpu_gnu module for matching
     const backend: gpu.Backend = switch (backend_mode) {
         .auto => selectOptimalBackend(cmd.pattern.len, file_size),
         .gpu_mode => if (build_options.is_macos) .metal else .vulkan,
-        .cpu_mode => .cpu,
+        .cpu_mode, .cpu_gnu => .cpu,
         .metal => .metal,
         .vulkan => .vulkan,
     };
@@ -406,30 +447,30 @@ fn processSubstitute(allocator: std.mem.Allocator, text: []const u8, cmd: SedCom
             if (build_options.is_macos) {
                 const substituter = gpu.metal.MetalSubstituter.init(allocator) catch |err| {
                     if (verbose) std.debug.print("Metal init failed: {}, falling back to CPU\n", .{err});
-                    break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                    break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
                 defer substituter.deinit();
                 break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch |err| {
                     if (verbose) std.debug.print("Metal failed: {}, falling back to CPU\n", .{err});
-                    break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                    break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
             } else {
-                break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             }
         },
         .vulkan => blk: {
             const substituter = gpu.vulkan.VulkanSubstituter.init(allocator) catch |err| {
                 if (verbose) std.debug.print("Vulkan init failed: {}, falling back to CPU\n", .{err});
-                break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
             defer substituter.deinit();
             break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch |err| {
                 if (verbose) std.debug.print("Vulkan failed: {}, falling back to CPU\n", .{err});
-                break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
         },
-        .cpu => try cpu.findMatches(text, cmd.pattern, cmd.options, allocator),
-        else => try cpu.findMatches(text, cmd.pattern, cmd.options, allocator),
+        .cpu => try doFindMatches(text, cmd.pattern, cmd.options, allocator),
+        else => try doFindMatches(text, cmd.pattern, cmd.options, allocator),
     };
     defer result.deinit();
 
@@ -467,26 +508,26 @@ fn processDelete(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand
         .metal => blk: {
             if (build_options.is_macos) {
                 const substituter = gpu.metal.MetalSubstituter.init(allocator) catch {
-                    break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                    break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
                 defer substituter.deinit();
                 break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
-                    break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                    break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
             } else {
-                break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             }
         },
         .vulkan => blk: {
             const substituter = gpu.vulkan.VulkanSubstituter.init(allocator) catch {
-                break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
             defer substituter.deinit();
             break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
-                break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
         },
-        else => try cpu.findMatches(text, cmd.pattern, cmd.options, allocator),
+        else => try doFindMatches(text, cmd.pattern, cmd.options, allocator),
     };
     defer result.deinit();
 
@@ -525,26 +566,26 @@ fn processPrint(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
         .metal => blk: {
             if (build_options.is_macos) {
                 const substituter = gpu.metal.MetalSubstituter.init(allocator) catch {
-                    break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                    break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
                 defer substituter.deinit();
                 break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
-                    break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                    break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
             } else {
-                break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             }
         },
         .vulkan => blk: {
             const substituter = gpu.vulkan.VulkanSubstituter.init(allocator) catch {
-                break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
             defer substituter.deinit();
             break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
-                break :blk try cpu.findMatches(text, cmd.pattern, cmd.options, allocator);
+                break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
         },
-        else => try cpu.findMatches(text, cmd.pattern, cmd.options, allocator),
+        else => try doFindMatches(text, cmd.pattern, cmd.options, allocator),
     };
     defer result.deinit();
 
@@ -611,6 +652,8 @@ fn printUsage() void {
         \\  -n, --quiet, --silent    suppress automatic printing of pattern space
         \\  -e SCRIPT, --expression=SCRIPT
         \\                           add the script to the commands to be executed
+        \\  -E, -r, --regexp-extended
+        \\                           use extended regular expressions (ERE)
         \\  -i, --in-place           edit files in place
         \\  -V, --verbose            print backend and timing information
         \\  -h, --help               display this help and exit
@@ -644,6 +687,7 @@ fn printUsage() void {
         \\
         \\Examples:
         \\  sed 's/foo/bar/g' input.txt         Replace all 'foo' with 'bar'
+        \\  sed -E 's/[0-9]+/NUM/g' file.txt    Extended regex (ERE)
         \\  sed -i 's/old/new/g' file.txt       Edit file in place
         \\  cat file.txt | sed 's/a/b/g'        Read from stdin
         \\  echo "hello" | sed 's/hello/hi/'    Pipe through sed

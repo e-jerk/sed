@@ -1,5 +1,6 @@
 const std = @import("std");
 const gpu = @import("gpu");
+const regex = @import("regex");
 
 const SubstituteOptions = gpu.SubstituteOptions;
 const SubstituteResult = gpu.SubstituteResult;
@@ -236,4 +237,176 @@ pub fn buildSkipTable(pattern: []const u8, case_insensitive: bool) [256]usize {
         }
     }
     return table;
+}
+
+/// CPU-based regex match finding using Thompson NFA
+/// Supports BRE (Basic Regular Expressions) and ERE (Extended Regular Expressions)
+pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: SubstituteOptions, allocator: std.mem.Allocator) !SubstituteResult {
+    // Empty pattern - match empty string at start (GNU sed behavior)
+    if (pattern.len == 0) {
+        var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+        try matches.append(allocator, MatchResult{
+            .start = 0,
+            .end = 0,
+            .line_num = 0,
+        });
+        const result = try matches.toOwnedSlice(allocator);
+        return SubstituteResult{ .matches = result, .total_matches = 1, .allocator = allocator };
+    }
+
+    // Convert BRE pattern to ERE if needed
+    const ere_pattern = if (!options.extended)
+        try convertBREtoERE(pattern, allocator)
+    else
+        null;
+    defer if (ere_pattern) |p| allocator.free(p);
+
+    const actual_pattern = ere_pattern orelse pattern;
+
+    // Compile the regex pattern
+    var compiled = regex.Regex.compile(allocator, actual_pattern, .{
+        .case_insensitive = options.case_insensitive,
+        .extended = true, // Always use ERE internally after conversion
+        .multiline = true, // Enable multiline mode for ^ and $ to match at line boundaries
+    }) catch |err| {
+        // If regex compilation fails, fall back to literal search
+        if (err == error.InvalidPattern or err == error.UnmatchedParen or err == error.UnmatchedBracket) {
+            return findMatches(text, pattern, .{
+                .case_insensitive = options.case_insensitive,
+                .global = options.global,
+                .first_only = options.first_only,
+                .anchor_start = options.anchor_start,
+            }, allocator);
+        }
+        return err;
+    };
+    defer compiled.deinit();
+
+    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    defer matches.deinit(allocator);
+
+    var total_matches: u64 = 0;
+    var line_num: u32 = 0;
+    var line_start: usize = 0;
+    var pos: usize = 0;
+    var found_in_line = false;
+
+    while (pos <= text.len) {
+        // Update line number tracking
+        while (line_start < pos) {
+            if (text[line_start] == '\n') {
+                line_num += 1;
+                found_in_line = false;
+            }
+            line_start += 1;
+        }
+
+        // For anchor_start, only match at line boundaries
+        if (options.anchor_start) {
+            // Find current line start
+            var current_line_start = pos;
+            if (pos > 0) {
+                var i = pos - 1;
+                while (i > 0 and text[i] != '\n') i -= 1;
+                current_line_start = if (text[i] == '\n') i + 1 else i;
+            }
+            if (pos != current_line_start) {
+                // Skip to next line
+                while (pos < text.len and text[pos] != '\n') pos += 1;
+                pos += 1;
+                continue;
+            }
+        }
+
+        // For non-global mode, only match first occurrence per line
+        if (!options.global and found_in_line) {
+            // Skip to next line
+            while (pos < text.len and text[pos] != '\n') pos += 1;
+            pos += 1;
+            continue;
+        }
+
+        // Try to find a match at this position
+        if (compiled.findAt(text, pos, allocator)) |m_opt| {
+            if (m_opt) |m| {
+                defer {
+                    var m_copy = m;
+                    m_copy.deinit();
+                }
+
+                try matches.append(allocator, MatchResult{
+                    .start = @intCast(m.start),
+                    .end = @intCast(m.end),
+                    .line_num = line_num,
+                });
+                total_matches += 1;
+                found_in_line = true;
+
+                if (options.first_only) {
+                    // Skip to next line
+                    while (pos < text.len and text[pos] != '\n') pos += 1;
+                    pos += 1;
+                    continue;
+                }
+
+                // Move past the match (avoid zero-length infinite loop)
+                pos = if (m.end > m.start) m.end else m.start + 1;
+                continue;
+            }
+        } else |_| {}
+
+        break;
+    }
+
+    const result = try matches.toOwnedSlice(allocator);
+    return SubstituteResult{ .matches = result, .total_matches = total_matches, .allocator = allocator };
+}
+
+/// Convert BRE (Basic Regular Expression) pattern to ERE (Extended Regular Expression)
+/// In BRE: \+ \? \| \( \) \{ \} are special, unescaped versions are literal
+/// In ERE: + ? | ( ) { } are special, escaped versions are literal
+fn convertBREtoERE(bre_pattern: []const u8, allocator: std.mem.Allocator) ![]u8 {
+    var result: std.ArrayListUnmanaged(u8) = .{};
+    defer result.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < bre_pattern.len) {
+        if (bre_pattern[i] == '\\' and i + 1 < bre_pattern.len) {
+            const next = bre_pattern[i + 1];
+            switch (next) {
+                // In BRE, \+ \? \| \( \) are special (quantifiers/grouping)
+                // In ERE, just + ? | ( ) without backslash
+                '+', '?', '|', '(', ')' => {
+                    try result.append(allocator, next);
+                    i += 2;
+                },
+                // In BRE, \{ \} are interval brackets
+                // In ERE, just { } without backslash
+                '{', '}' => {
+                    try result.append(allocator, next);
+                    i += 2;
+                },
+                // Other escapes pass through
+                else => {
+                    try result.append(allocator, '\\');
+                    try result.append(allocator, next);
+                    i += 2;
+                },
+            }
+        } else if (bre_pattern[i] == '+' or bre_pattern[i] == '?' or bre_pattern[i] == '|' or
+            bre_pattern[i] == '(' or bre_pattern[i] == ')' or
+            bre_pattern[i] == '{' or bre_pattern[i] == '}')
+        {
+            // In BRE, unescaped + ? | ( ) { } are literal
+            // In ERE, they need to be escaped
+            try result.append(allocator, '\\');
+            try result.append(allocator, bre_pattern[i]);
+            i += 1;
+        } else {
+            try result.append(allocator, bre_pattern[i]);
+            i += 1;
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
 }

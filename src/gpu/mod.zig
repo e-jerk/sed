@@ -62,6 +62,7 @@ pub const SubstituteOptions = struct {
     first_only: bool = false,
     line_mode: bool = false,
     anchor_start: bool = false, // ^ pattern anchor
+    extended: bool = false, // ERE mode (-E/-r), when false uses BRE
 
     pub fn toFlags(self: SubstituteOptions) u32 {
         var flags: u32 = 0;

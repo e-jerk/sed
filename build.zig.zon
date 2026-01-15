@@ -5,6 +5,16 @@
     .minimum_zig_version = "0.15.2",
 
     .dependencies = .{
+        // GNU sed source for reference implementation
+        .gnu_sed = .{
+            .url = "https://ftp.gnu.org/gnu/sed/sed-4.9.tar.xz",
+            .hash = "N-V-__8AAEjRoAB9ohVT_tFbBMfRujMKWFPlHUgQVEEcCW_J",
+        },
+        // Regex engine for pattern matching
+        .regex = .{
+            .url = "git+https://github.com/e-jerk/regex#main",
+            .hash = "e_jerk_regex-0.1.0-ex0qscb1AAD9BAq40H7IznBZgW049MlUMBj0WK_03mCa",
+        },
         // Shared shader library
         .shaders_common = .{
             .url = "git+https://github.com/e-jerk/shaders-common#v0.1.0",

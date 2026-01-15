@@ -11,7 +11,8 @@ RUN apk add --no-cache vulkan-loader mesa-vulkan-swrast && \
         apk add --no-cache mesa-vulkan-broadcom mesa-vulkan-freedreno mesa-vulkan-panfrost || true; \
     fi
 
-COPY ${BINARY_NAME} /usr/local/bin/${BINARY_NAME}
+# Copy the architecture-specific binary
+COPY binaries/${TARGETARCH}/${BINARY_NAME} /usr/local/bin/${BINARY_NAME}
 RUN chmod +x /usr/local/bin/${BINARY_NAME}
 
 ENTRYPOINT ["sed"]

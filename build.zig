@@ -33,6 +33,10 @@ pub fn build(b: *std.Build) void {
     });
     const vulkan_module = vulkan_dep.module("vulkan-zig");
 
+    // Regex engine
+    const regex_dep = b.dependency("regex", .{});
+    const regex_module = regex_dep.module("regex");
+
     // Shared shader library
     const shaders_common = b.dependency("shaders_common", .{});
 
@@ -89,11 +93,23 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // Create cpu module for reuse
+    // Create cpu module for reuse (optimized SIMD implementation)
     const cpu_module = b.addModule("cpu", .{
-        .root_source_file = b.path("src/cpu.zig"),
+        .root_source_file = b.path("src/cpu_optimized.zig"),
         .imports = &.{
             .{ .name = "gpu", .module = gpu_module },
+            .{ .name = "regex", .module = regex_module },
+        },
+    });
+
+    // Create cpu_gnu module (GNU sed reference implementation)
+    // Note: sed GNU backend delegates to optimized backend since GNU sed's pattern
+    // matching is tightly integrated with its command processor
+    const cpu_gnu_module = b.addModule("cpu_gnu", .{
+        .root_source_file = b.path("src/cpu_gnu.zig"),
+        .imports = &.{
+            .{ .name = "gpu", .module = gpu_module },
+            .{ .name = "cpu_optimized", .module = cpu_module },
         },
     });
 
@@ -111,6 +127,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "spirv", .module = spirv_module },
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
+                .{ .name = "cpu_gnu", .module = cpu_gnu_module },
             },
         }),
     });
@@ -158,6 +175,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "spirv", .module = spirv_module },
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
+                .{ .name = "cpu_gnu", .module = cpu_gnu_module },
             },
         }),
     });
@@ -300,10 +318,37 @@ pub fn build(b: *std.Build) void {
         unit_tests.step.dependOn(&metal_compile_check.step);
     }
 
+    // Regex tests from tests/regex_tests.zig
+    const regex_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/regex_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zig-metal", .module = zig_metal_module },
+                .{ .name = "build_options", .module = build_options_module },
+                .{ .name = "vulkan", .module = vulkan_module },
+                .{ .name = "spirv", .module = spirv_module },
+                .{ .name = "gpu", .module = gpu_module },
+                .{ .name = "cpu", .module = cpu_module },
+            },
+        }),
+    });
+
+    if (is_macos and is_native) {
+        regex_tests.linkFramework("Foundation");
+        regex_tests.linkFramework("Metal");
+        regex_tests.linkFramework("QuartzCore");
+        regex_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
+        regex_tests.linkSystemLibrary("MoltenVK");
+    }
+
     const run_main_tests = b.addRunArtifact(main_tests);
     const run_unit_tests = b.addRunArtifact(unit_tests);
+    const run_regex_tests = b.addRunArtifact(regex_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_main_tests.step);
     test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&run_regex_tests.step);
 }

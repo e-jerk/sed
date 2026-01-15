@@ -2,6 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const gpu = @import("gpu");
 const cpu = @import("cpu");
+const cpu_gnu = @import("cpu_gnu");
 
 const SubstituteOptions = gpu.SubstituteOptions;
 
@@ -52,9 +53,13 @@ pub fn main() !void {
     warmup_result.deinit();
     std.debug.print("Expected matches: {d}\n\n", .{expected_matches});
 
-    // Benchmark CPU
-    std.debug.print("Benchmarking CPU...\n", .{});
+    // Benchmark CPU (Optimized)
+    std.debug.print("Benchmarking CPU (Optimized)...\n", .{});
     const cpu_stats = try benchmarkCpu(allocator, text, pattern, options, iterations);
+
+    // Benchmark CPU (GNU)
+    std.debug.print("Benchmarking CPU (GNU)...\n", .{});
+    const cpu_gnu_stats = try benchmarkCpuGnu(allocator, text, pattern, options, iterations);
 
     // Benchmark Metal (macOS only)
     var metal_stats: ?BenchStats = null;
@@ -72,7 +77,11 @@ pub fn main() !void {
     std.debug.print("{s:<12} {s:>12} {s:>12} {s:>12} {s:>10}\n", .{ "Backend", "Avg (ms)", "Min (ms)", "Throughput", "Speedup" });
     std.debug.print("{s:-<12} {s:->12} {s:->12} {s:->12} {s:->10}\n", .{ "", "", "", "", "" });
 
-    printStats("CPU", cpu_stats, cpu_stats.avg_time_ms);
+    printStats("CPU-Optimized", cpu_stats, cpu_stats.avg_time_ms);
+
+    if (cpu_gnu_stats) |stats| {
+        printStats("CPU-GNU", stats, cpu_stats.avg_time_ms);
+    }
 
     if (metal_stats) |stats| {
         printStats("Metal", stats, cpu_stats.avg_time_ms);
@@ -104,6 +113,37 @@ fn benchmarkCpu(allocator: std.mem.Allocator, text: []const u8, pattern: []const
     for (0..iterations) |_| {
         const start = std.time.milliTimestamp();
         var result = try cpu.findMatches(text, pattern, options, allocator);
+        const elapsed = std.time.milliTimestamp() - start;
+
+        matches = result.total_matches;
+        result.deinit();
+
+        total_time += elapsed;
+        min_time = @min(min_time, elapsed);
+    }
+
+    const avg_time_ms = @as(f64, @floatFromInt(total_time)) / @as(f64, @floatFromInt(iterations));
+    const throughput = @as(f64, @floatFromInt(text.len)) / (avg_time_ms / 1000.0) / (1024 * 1024);
+
+    return BenchStats{
+        .avg_time_ms = avg_time_ms,
+        .min_time_ms = @floatFromInt(min_time),
+        .throughput_mbs = throughput,
+        .matches = matches,
+    };
+}
+
+fn benchmarkCpuGnu(allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SubstituteOptions, iterations: usize) !?BenchStats {
+    var total_time: i64 = 0;
+    var min_time: i64 = std.math.maxInt(i64);
+    var matches: u64 = 0;
+
+    for (0..iterations) |_| {
+        const start = std.time.milliTimestamp();
+        var result = cpu_gnu.findMatches(text, pattern, options, allocator) catch |err| {
+            std.debug.print("GNU findMatches failed: {}\n", .{err});
+            return null;
+        };
         const elapsed = std.time.milliTimestamp() - start;
 
         matches = result.total_matches;
@@ -209,11 +249,21 @@ fn printStats(name: []const u8, stats: BenchStats, cpu_avg: f64) void {
 }
 
 fn verifyCorrectness(allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SubstituteOptions, expected: u64) !void {
-    // CPU
+    // CPU (Optimized)
     var cpu_result = try cpu.findMatches(text, pattern, options, allocator);
     defer cpu_result.deinit();
     const cpu_ok = cpu_result.total_matches == expected;
-    std.debug.print("CPU:    {d} matches - {s}\n", .{ cpu_result.total_matches, if (cpu_ok) "PASS" else "FAIL" });
+    std.debug.print("CPU-Optimized: {d} matches - {s}\n", .{ cpu_result.total_matches, if (cpu_ok) "PASS" else "FAIL" });
+
+    // CPU (GNU)
+    if (cpu_gnu.findMatches(text, pattern, options, allocator)) |gnu_res| {
+        var gnu_result = gnu_res;
+        defer gnu_result.deinit();
+        const gnu_ok = gnu_result.total_matches == expected;
+        std.debug.print("CPU-GNU:       {d} matches - {s}\n", .{ gnu_result.total_matches, if (gnu_ok) "PASS" else "FAIL" });
+    } else |_| {
+        std.debug.print("CPU-GNU:       unavailable\n", .{});
+    }
 
     // Metal
     if (build_options.is_macos) {
