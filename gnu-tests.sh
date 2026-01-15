@@ -167,6 +167,96 @@ else
     fail "Expression option (-e)" "Hello" "$result"
 fi
 
+# Test 12a: Multiple -e expressions
+result=$(echo "hello world" | $SED -e 's/hello/hi/' -e 's/world/there/' 2>/dev/null)
+if [ "$result" = "hi there" ]; then
+    pass "Multiple -e expressions"
+else
+    fail "Multiple -e expressions" "hi there" "$result"
+fi
+
+# Test 12b: Three -e expressions
+result=$(echo "abc def ghi" | $SED -e 's/abc/AAA/' -e 's/def/BBB/' -e 's/ghi/CCC/' 2>/dev/null)
+if [ "$result" = "AAA BBB CCC" ]; then
+    pass "Three -e expressions"
+else
+    fail "Three -e expressions" "AAA BBB CCC" "$result"
+fi
+
+# Test 12c: Chained substitution (output of one is input to next)
+result=$(echo "cat" | $SED -e 's/cat/bat/' -e 's/bat/rat/' 2>/dev/null)
+if [ "$result" = "rat" ]; then
+    pass "Chained substitution (-e)"
+else
+    fail "Chained substitution (-e)" "rat" "$result"
+fi
+
+# Test 12d: Mixed commands with multiple -e
+result=$(echo -e "foo\nbar\nfoo" | $SED -e 's/foo/baz/' -e '/bar/d' 2>/dev/null)
+expected=$(printf "baz\nbaz")
+if [ "$result" = "$expected" ]; then
+    pass "Mixed commands with multiple -e"
+else
+    fail "Mixed commands with multiple -e" "$expected" "$result"
+fi
+
+echo
+echo "--- Line Addressing ---"
+
+# Test 12e: Single line address
+result=$(echo -e "line1\nline2\nline3" | $SED '2s/line/LINE/' 2>/dev/null)
+expected=$(printf "line1\nLINE2\nline3")
+if [ "$result" = "$expected" ]; then
+    pass "Single line address (2s/...)"
+else
+    fail "Single line address (2s/...)" "$expected" "$result"
+fi
+
+# Test 12f: Range address
+result=$(echo -e "a\nb\nc\nd\ne" | $SED '2,4s/./X/' 2>/dev/null)
+expected=$(printf "a\nX\nX\nX\ne")
+if [ "$result" = "$expected" ]; then
+    pass "Range address (2,4s/...)"
+else
+    fail "Range address (2,4s/...)" "$expected" "$result"
+fi
+
+# Test 12g: Range to end
+result=$(echo -e "a\nb\nc\nd" | $SED '3,$s/./X/' 2>/dev/null)
+expected=$(printf "a\nb\nX\nX")
+if [ "$result" = "$expected" ]; then
+    pass "Range to end (3,\$s/...)"
+else
+    fail "Range to end (3,\$s/...)" "$expected" "$result"
+fi
+
+# Test 12h: Last line address
+result=$(echo -e "a\nb\nc" | $SED '$s/c/LAST/' 2>/dev/null)
+expected=$(printf "a\nb\nLAST")
+if [ "$result" = "$expected" ]; then
+    pass "Last line address (\$s/...)"
+else
+    fail "Last line address (\$s/...)" "$expected" "$result"
+fi
+
+# Test 12i: Delete by line number
+result=$(echo -e "a\nb\nc\nd" | $SED '2d' 2>/dev/null)
+expected=$(printf "a\nc\nd")
+if [ "$result" = "$expected" ]; then
+    pass "Delete by line number (2d)"
+else
+    fail "Delete by line number (2d)" "$expected" "$result"
+fi
+
+# Test 12j: Delete range
+result=$(echo -e "a\nb\nc\nd\ne" | $SED '2,4d' 2>/dev/null)
+expected=$(printf "a\ne")
+if [ "$result" = "$expected" ]; then
+    pass "Delete range (2,4d)"
+else
+    fail "Delete range (2,4d)" "$expected" "$result"
+fi
+
 echo
 echo "--- File Operations ---"
 
@@ -247,6 +337,66 @@ if [ "$result" = "coffee" ]; then
     pass "Unicode handling"
 else
     fail "Unicode handling" "coffee" "$result"
+fi
+
+echo
+echo "--- Replacement Special Characters ---"
+
+# Test 21: & expands to matched text
+result=$(echo "hello world" | $SED 's/world/[&]/' 2>/dev/null)
+if [ "$result" = "hello [world]" ]; then
+    pass "& expands to matched text"
+else
+    fail "& expands to matched text" "hello [world]" "$result"
+fi
+
+# Test 22: & with global flag
+result=$(echo "foo bar foo" | $SED 's/foo/<&>/g' 2>/dev/null)
+if [ "$result" = "<foo> bar <foo>" ]; then
+    pass "& with global flag"
+else
+    fail "& with global flag" "<foo> bar <foo>" "$result"
+fi
+
+# Test 23: Escaped & (literal ampersand)
+result=$(echo "hello" | $SED 's/hello/a \& b/' 2>/dev/null)
+if [ "$result" = "a & b" ]; then
+    pass "Escaped & (literal ampersand)"
+else
+    fail "Escaped & (literal ampersand)" "a & b" "$result"
+fi
+
+# Test 24: Multiple & in replacement
+result=$(echo "foo" | $SED 's/foo/&-&-&/' 2>/dev/null)
+if [ "$result" = "foo-foo-foo" ]; then
+    pass "Multiple & in replacement"
+else
+    fail "Multiple & in replacement" "foo-foo-foo" "$result"
+fi
+
+# Test 25: & with case-insensitive match
+result=$(echo "Hello" | $SED 's/hello/[&]/i' 2>/dev/null)
+if [ "$result" = "[Hello]" ]; then
+    pass "& with case-insensitive match preserves original case"
+else
+    fail "& with case-insensitive match preserves original case" "[Hello]" "$result"
+fi
+
+# Test 26: Escape sequence \n in replacement
+result=$(echo "a b" | $SED 's/ /\n/' 2>/dev/null | wc -l | tr -d ' ')
+if [ "$result" = "2" ]; then
+    pass "Escape sequence \\n in replacement"
+else
+    fail "Escape sequence \\n in replacement" "2 lines" "$result lines"
+fi
+
+# Test 27: Escape sequence \t in replacement
+result=$(echo "a b" | $SED 's/ /\t/' 2>/dev/null)
+expected=$(printf "a\tb")
+if [ "$result" = "$expected" ]; then
+    pass "Escape sequence \\t in replacement"
+else
+    fail "Escape sequence \\t in replacement" "$expected" "$result"
 fi
 
 echo

@@ -7,7 +7,7 @@ A high-performance `sed` replacement that uses GPU acceleration via Metal (macOS
 - **GPU-Accelerated Substitution**: Parallel pattern matching for `s/pattern/replacement/` commands
 - **SIMD-Optimized CPU**: Vectorized Boyer-Moore-Horspool with 16/32-byte operations
 - **Auto-Selection**: Intelligent backend selection based on file size and pattern complexity
-- **GNU Compatible**: Supports substitute, delete, print, and transliterate commands
+- **GNU Compatible**: Supports multiple expressions, line addressing, and common sed commands
 
 ## Installation
 
@@ -34,6 +34,18 @@ sed -n '/pattern/p' file.txt
 # Transliterate characters
 sed 'y/abc/xyz/' file.txt
 
+# Multiple expressions
+sed -e 's/foo/bar/' -e 's/baz/qux/' file.txt
+sed -e 's/a/A/' -e 's/b/B/' -e 's/c/C/' file.txt
+
+# Line addressing
+sed '2s/old/new/' file.txt         # Line 2 only
+sed '2,4s/old/new/' file.txt       # Lines 2-4
+sed '3,$s/old/new/' file.txt       # Line 3 to end
+sed '$s/old/new/' file.txt         # Last line only
+sed '2d' file.txt                  # Delete line 2
+sed '2,4d' file.txt                # Delete lines 2-4
+
 # Edit file in place
 sed -i 's/old/new/g' file.txt
 
@@ -44,6 +56,30 @@ sed --gpu 's/search/replace/g' largefile.txt
 sed -V 's/pattern/replacement/g' file.txt
 ```
 
+## GNU Feature Compatibility
+
+| Feature | CPU-Optimized | GNU Backend | Metal | Vulkan | Status |
+|---------|:-------------:|:-----------:|:-----:|:------:|--------|
+| `s/pattern/replacement/` | ✓ | ✓ | ✓ | ✓ | Native |
+| `s///g` global flag | ✓ | ✓ | ✓ | ✓ | Native |
+| `s///i` case insensitive | ✓ | ✓ | ✓ | ✓ | Native |
+| `/pattern/d` delete | ✓ | ✓ | ✓ | ✓ | Native |
+| `/pattern/p` print | ✓ | ✓ | ✓ | ✓ | Native |
+| `y/src/dst/` transliterate | ✓ | ✓ | — | — | Native (CPU) |
+| `&` matched text | ✓ | ✓ | ✓ | ✓ | Native |
+| `\n` `\t` escape sequences | ✓ | ✓ | ✓ | ✓ | Native |
+| `-i` in-place edit | ✓ | ✓ | ✓ | ✓ | Native |
+| `-n` suppress output | ✓ | ✓ | ✓ | ✓ | Native |
+| `-e` multiple expressions | ✓ | ✓ | — | — | **Native** |
+| Line addressing (`1,5s/...`) | ✓ | ✓ | — | — | **Native** |
+| `-E/-r` extended regex | ✓ | ✓ | — | — | Native (CPU) |
+| `\1` backreferences | — | ✓ | — | — | GNU fallback |
+| `a\` `i\` `c\` commands | — | ✓ | — | — | GNU fallback |
+| Hold space (`h/H/g/G/x`) | — | ✓ | — | — | GNU fallback |
+| Branching (`b/t/:label`) | — | ✓ | — | — | GNU fallback |
+
+**Test Coverage**: 37/37 GNU compatibility tests passing
+
 ## Supported Commands
 
 | Command | Description |
@@ -52,6 +88,11 @@ sed -V 's/pattern/replacement/g' file.txt
 | `y/source/dest/` | Transliterate characters |
 | `/pattern/d` | Delete lines matching pattern |
 | `/pattern/p` | Print lines matching pattern |
+| `Ns/pattern/replacement/` | Apply to line N only |
+| `N,Ms/pattern/replacement/` | Apply to lines N through M |
+| `$s/pattern/replacement/` | Apply to last line |
+| `Nd` | Delete line N |
+| `N,Md` | Delete lines N through M |
 
 ## Substitute Flags
 
@@ -65,7 +106,7 @@ sed -V 's/pattern/replacement/g' file.txt
 
 | Flag | Description |
 |------|-------------|
-| `-e, --expression` | Specify sed expression |
+| `-e, --expression` | Specify sed expression (can be repeated) |
 | `-n, --quiet` | Suppress automatic output |
 | `-i, --in-place` | Edit files in place |
 | `-V, --verbose` | Show timing and backend info |
@@ -77,12 +118,13 @@ sed -V 's/pattern/replacement/g' file.txt
 | `--auto` | Automatically select optimal backend (default) |
 | `--gpu` | Use GPU (Metal on macOS, Vulkan elsewhere) |
 | `--cpu` | Force CPU backend |
+| `--gnu` | Force GNU sed backend |
 | `--metal` | Force Metal backend (macOS only) |
 | `--vulkan` | Force Vulkan backend |
 
 ## Architecture & Optimizations
 
-### CPU Implementation (`src/cpu.zig`)
+### CPU Implementation (`src/cpu_optimized.zig`)
 
 The CPU backend uses SIMD-optimized algorithms:
 
@@ -96,10 +138,16 @@ The CPU backend uses SIMD-optimized algorithms:
 - `toLowerVec16()`: Parallel lowercase conversion using `@select`
 - `findNextNewlineSIMD()`: 32-byte chunked newline search
 
-**Line Tracking**:
-- Incremental line number tracking during search
-- Efficient `first_only` mode skips to next line after match
-- Anchor support (`^`) for line-start matching
+**Multiple Expressions**:
+- Expressions collected into array during argument parsing
+- Applied sequentially to each line
+- Supports mixing command types (`s///`, `d`, `y///`)
+
+**Line Addressing**:
+- `Address` union: single line, range, last line (`$`), pattern
+- Address parsing before command character
+- Line number tracking during processing
+- Range validation with start/end bounds
 
 **Transliteration**:
 - `transliterate()`: 256-byte lookup table for O(1) character mapping
@@ -146,15 +194,16 @@ The `e_jerk_gpu` library considers:
 
 ## Performance
 
-| Pattern Type | 50MB File | GPU Speedup |
-|--------------|-----------|-------------|
-| Single char (`e`) | 176 MB/s CPU → 2.4 GB/s GPU | **13.5x** |
-| Common word (`the`) | 394 MB/s CPU → 2.5 GB/s GPU | **6.4x** |
-| Identifier (`test`) | 446 MB/s CPU → 2.5 GB/s GPU | **5.6x** |
-| Case-insensitive | 633 MB/s CPU → 2.9 GB/s GPU | **4.6x** |
-| Long pattern | 746 MB/s CPU → 2.0 GB/s GPU | **2.7x** |
+| Pattern Type | CPU | GPU | Speedup |
+|--------------|-----|-----|---------|
+| Single char (`e`) | 177 MB/s | 2.8 GB/s | **16.0x** |
+| Common word (`the`) | 397 MB/s | 3.1 GB/s | **7.9x** |
+| Identifier (`test`) | 478 MB/s | 3.1 GB/s | **6.5x** |
+| Case-insensitive | 633 MB/s | 3.5 GB/s | **5.5x** |
+| Long pattern | 754 MB/s | 3.2 GB/s | **4.2x** |
+| Log warnings | 1.1 GB/s | 4.2 GB/s | **3.8x** |
 
-*Results measured on Apple M1 Max.*
+*Results measured on Apple M1 Max with 50MB test files.*
 
 ## Requirements
 
@@ -169,9 +218,17 @@ zig build -Doptimize=ReleaseFast
 
 # Run tests
 zig build test      # Unit tests
-zig build smoke     # Integration tests
+zig build smoke     # Integration tests (GPU verification)
 zig build bench     # Benchmarks
+bash gnu-tests.sh   # GNU compatibility tests (37 tests)
 ```
+
+## Recent Changes
+
+- **Multiple Expressions**: Native `-e` support for chaining expressions
+- **Line Addressing**: Native support for `2s/...`, `2,4s/...`, `$s/...`, `2d`, `2,4d`
+- **Mixed Commands**: Combine substitution, delete, and other commands with `-e`
+- **Test Coverage**: 37 GNU compatibility tests passing
 
 ## License
 
