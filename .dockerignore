@@ -18,9 +18,5 @@ LICENSE
 # CI/CD
 .github/
 
-# Tests and benchmarks
-tests/
-benchmarks/
-
 # Formula
 Formula/
