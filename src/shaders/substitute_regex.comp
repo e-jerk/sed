@@ -1,0 +1,304 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// ============================================================================
+// GPU-Accelerated Regex Substitution for sed (Vulkan/GLSL)
+// Thompson NFA execution for regex pattern matching
+// ============================================================================
+
+#include "string_ops.glsl"
+#include "regex_ops.glsl"
+
+const uint MAX_RESULTS = 1000000u;
+
+// Match result (matches sed's MatchResult struct)
+struct MatchResult {
+    uint start;
+    uint end_pos;
+    uint line_num;
+    uint _pad;
+};
+
+// Sed-specific flags (FLAG_CASE_INSENSITIVE is in regex_ops.glsl as 0x04u)
+const uint FLAG_GLOBAL = 0x08u;
+const uint FLAG_FIRST_ONLY = 0x10u;
+const uint FLAG_LINE_MODE = 0x20u;
+
+// Buffer bindings
+layout(std430, binding = 0) readonly buffer TextBuffer { uint text_data[]; };
+layout(std430, binding = 1) readonly buffer StatesBuffer { uint states[]; };
+layout(std430, binding = 2) readonly buffer BitmapsBuffer { uint bitmaps[]; };
+layout(std430, binding = 3) readonly buffer ConfigBuffer {
+    uint text_len;
+    uint num_states;
+    uint start_state;
+    uint header_flags;
+    uint num_bitmaps;
+    uint max_results;
+    uint flags;
+    uint _pad;
+};
+layout(std430, binding = 4) readonly buffer HeaderBuffer {
+    uint header_num_states;
+    uint header_start_state;
+    uint header_num_groups;
+    uint header_flags_buf;
+};
+layout(std430, binding = 5) writeonly buffer ResultBuffer { MatchResult results[]; };
+layout(std430, binding = 6) buffer CounterBuffer { uint result_count; uint total_matches; };
+layout(std430, binding = 7) readonly buffer LineOffsetsBuffer { uint line_offsets[]; };
+layout(std430, binding = 8) readonly buffer LineLengthsBuffer { uint line_lengths[]; };
+
+// Get byte from text buffer
+uint get_text_byte(uint pos) {
+    uint word_idx = pos >> 2u;
+    uint byte_idx = pos & 3u;
+    return (text_data[word_idx] >> (byte_idx << 3u)) & 0xFFu;
+}
+
+// Add epsilon transitions to state set (iterative, GLSL doesn't support recursion)
+void add_epsilon_closure(inout uint set[8], uint initial_state, uint num_st) {
+    if (initial_state >= num_st) return;
+    if (STATE_SET_CONTAINS(set, initial_state)) return;
+
+    // Use a simple worklist with a fixed-size stack
+    uint stack[32];
+    uint stack_top = 0u;
+    stack[stack_top++] = initial_state;
+
+    while (stack_top > 0u) {
+        uint state_idx = stack[--stack_top];
+
+        if (state_idx >= num_st) continue;
+        if (STATE_SET_CONTAINS(set, state_idx)) continue;
+
+        STATE_SET_ADD(set, state_idx);
+
+        uint base = state_idx * 3u;
+        uint word0 = states[base];
+        uint state_type = get_state_type(word0);
+
+        if (state_type == STATE_SPLIT) {
+            uint out1 = get_state_out(word0);
+            uint word1 = states[base + 1u];
+            uint out2 = get_state_out2(word1);
+
+            if (out2 != STATE_NONE && stack_top < 31u) {
+                stack[stack_top++] = out2;
+            }
+            if (out1 != STATE_NONE && stack_top < 31u) {
+                stack[stack_top++] = out1;
+            }
+        } else if (state_type == STATE_GROUP_START || state_type == STATE_GROUP_END) {
+            uint next_state = get_state_out(word0);
+            if (next_state != STATE_NONE && stack_top < 31u) {
+                stack[stack_top++] = next_state;
+            }
+        }
+    }
+}
+
+// Perform one step of NFA execution
+void nfa_step(
+    uint current[8],
+    inout uint next_set[8],
+    uint c,
+    uint pos,
+    uint text_end,
+    uint num_st,
+    bool prev_is_word,
+    bool curr_is_word
+) {
+    STATE_SET_CLEAR(next_set);
+
+    for (uint word = 0u; word < 8u; word++) {
+        uint mask = current[word];
+        while (mask != 0u) {
+            uint bit = findLSB(mask);
+            uint state_idx = word * 32u + bit;
+            mask &= mask - 1u;
+
+            if (state_idx >= num_st) continue;
+
+            uint base = state_idx * 3u;
+            uint word0 = states[base];
+            uint word1 = states[base + 1u];
+            uint word2 = states[base + 2u];
+
+            uint state_type = get_state_type(word0);
+            uint state_flags = get_state_flags(word0);
+            uint state_literal = get_state_literal(word1);
+            uint next_state = get_state_out(word0);
+
+            bool matched = false;
+
+            if (state_type == STATE_LITERAL) {
+                bool case_insensitive = (state_flags & STATE_FLAG_CASE_INSENSITIVE) != 0u;
+                if (case_insensitive) {
+                    matched = regex_to_lower(c) == regex_to_lower(state_literal);
+                } else {
+                    matched = c == state_literal;
+                }
+            } else if (state_type == STATE_CHAR_CLASS) {
+                uint bitmap_offset = get_state_bitmap_offset(word2);
+                uint bitmap_word_idx = c >> 5u;
+                uint bitmap_bit = c & 31u;
+                uint bitmap_word = bitmaps[bitmap_offset + bitmap_word_idx];
+                bool in_class = (bitmap_word & (1u << bitmap_bit)) != 0u;
+                bool negated = (state_flags & STATE_FLAG_NEGATED) != 0u;
+                matched = in_class != negated;
+            } else if (state_type == STATE_DOT) {
+                matched = c != 10u;  // Match any except newline
+            } else if (state_type == STATE_ANY) {
+                matched = true;
+            } else if (state_type == STATE_LINE_START) {
+                if (check_line_start(pos > 0u ? get_text_byte(pos - 1u) : 0u, pos)) {
+                    if (next_state != STATE_NONE) {
+                        add_epsilon_closure(next_set, next_state, num_st);
+                    }
+                }
+            } else if (state_type == STATE_LINE_END) {
+                if (check_line_end(c, pos, text_end)) {
+                    if (next_state != STATE_NONE) {
+                        add_epsilon_closure(next_set, next_state, num_st);
+                    }
+                }
+            } else if (state_type == STATE_WORD_BOUNDARY) {
+                if (check_word_boundary(prev_is_word, curr_is_word)) {
+                    if (next_state != STATE_NONE) {
+                        add_epsilon_closure(next_set, next_state, num_st);
+                    }
+                }
+            } else if (state_type == STATE_NOT_WORD_BOUNDARY) {
+                if (!check_word_boundary(prev_is_word, curr_is_word)) {
+                    if (next_state != STATE_NONE) {
+                        add_epsilon_closure(next_set, next_state, num_st);
+                    }
+                }
+            }
+
+            if (matched && next_state != STATE_NONE) {
+                add_epsilon_closure(next_set, next_state, num_st);
+            }
+        }
+    }
+}
+
+// Check if any state in set is a match state
+bool has_match_state(uint set[8], uint num_st) {
+    for (uint word = 0u; word < 8u; word++) {
+        uint mask = set[word];
+        while (mask != 0u) {
+            uint bit = findLSB(mask);
+            uint state_idx = word * 32u + bit;
+            mask &= mask - 1u;
+
+            if (state_idx >= num_st) continue;
+
+            uint base = state_idx * 3u;
+            uint word0 = states[base];
+            uint state_type = get_state_type(word0);
+
+            if (state_type == STATE_MATCH) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Execute regex on a line, returns true if match found
+// Uses longest-match semantics (greedy matching)
+bool regex_find_in_line(
+    uint line_start_pos,
+    uint line_len,
+    uint num_st,
+    uint start_st,
+    out uint match_start,
+    out uint match_end
+) {
+    uint line_end = line_start_pos + line_len;
+
+    for (uint start_pos = line_start_pos; start_pos < line_end; start_pos++) {
+        uint current[8];
+        uint next_set[8];
+        STATE_SET_CLEAR(current);
+        add_epsilon_closure(current, start_st, num_st);
+
+        uint prev_char = (start_pos > 0u) ? get_text_byte(start_pos - 1u) : 0u;
+        bool prev_is_word = regex_is_word_char(prev_char);
+
+        bool found_match = false;
+        uint longest_end = start_pos;
+
+        // Check for immediate match (empty pattern or zero-width assertions)
+        if (has_match_state(current, num_st)) {
+            found_match = true;
+            longest_end = start_pos;
+        }
+
+        for (uint pos = start_pos; pos < line_end; pos++) {
+            uint c = get_text_byte(pos);
+            bool curr_is_word = regex_is_word_char(c);
+
+            nfa_step(current, next_set, c, pos, line_end, num_st, prev_is_word, curr_is_word);
+
+            STATE_SET_COPY(current, next_set);
+
+            // Track longest match (don't return early - greedy semantics)
+            if (has_match_state(current, num_st)) {
+                found_match = true;
+                longest_end = pos + 1u;
+            }
+
+            if (STATE_SET_EMPTY(current)) {
+                break;
+            }
+
+            prev_is_word = curr_is_word;
+        }
+
+        // If we found any match at this starting position, return the longest one
+        if (found_match) {
+            match_start = start_pos;
+            match_end = longest_end;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    uint num_lines = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+
+    if (gid >= num_lines) return;
+
+    uint line_start_pos = line_offsets[gid];
+    uint line_len = line_lengths[gid];
+
+    uint match_start, match_end;
+    bool found = regex_find_in_line(
+        line_start_pos,
+        line_len,
+        num_states,
+        start_state,
+        match_start,
+        match_end
+    );
+
+    if (found) {
+        uint idx = atomicAdd(result_count, 1u);
+        atomicAdd(total_matches, 1u);
+
+        if (idx < max_results) {
+            results[idx].start = match_start;
+            results[idx].end_pos = match_end;
+            results[idx].line_num = gid;
+            results[idx]._pad = 0u;
+        }
+    }
+}

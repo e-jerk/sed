@@ -72,7 +72,7 @@ sed -V 's/pattern/replacement/g' file.txt
 | `-n` suppress output | ✓ | ✓ | ✓ | ✓ | Native |
 | `-e` multiple expressions | ✓ | ✓ | — | — | **Native** |
 | Line addressing (`1,5s/...`) | ✓ | ✓ | — | — | **Native** |
-| `-E/-r` extended regex | ✓ | ✓ | — | — | Native (CPU) |
+| `-E/-r` extended regex | ✓ | ✓ | ✓ | ✓ | **Native** |
 | `\1` backreferences | — | ✓ | — | — | GNU fallback |
 | `a\` `i\` `c\` commands | — | ✓ | — | — | GNU fallback |
 | Hold space (`h/H/g/G/x`) | — | ✓ | — | — | GNU fallback |
@@ -225,6 +225,7 @@ bash gnu-tests.sh   # GNU compatibility tests (37 tests)
 
 ## Recent Changes
 
+- **GPU Regex Support**: Native Thompson NFA regex execution on Metal and Vulkan GPUs for `s/regex/replacement/` with extended patterns
 - **Multiple Expressions**: Native `-e` support for chaining expressions
 - **Line Addressing**: Native support for `2s/...`, `2,4s/...`, `$s/...`, `2d`, `2,4d`
 - **Mixed Commands**: Combine substitution, delete, and other commands with `-e`

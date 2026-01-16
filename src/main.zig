@@ -210,35 +210,33 @@ pub fn main() !void {
     }
 }
 
+/// Check if pattern requires regex processing
+fn needsRegex(pattern: []const u8, options: SubstituteOptions) bool {
+    if (options.extended) return true;
+    // For BRE mode (default), also use regex for special characters
+    var i: usize = 0;
+    while (i < pattern.len) : (i += 1) {
+        const c = pattern[i];
+        if (c == '.' or c == '*' or c == '^' or c == '$' or c == '[') {
+            return true;
+        }
+        if (c == '\\' and i + 1 < pattern.len) {
+            const next = pattern[i + 1];
+            if (next == '+' or next == '?' or next == '|' or next == '(' or next == ')' or next == '{' or next == '}') {
+                return true;
+            }
+            i += 1;
+        }
+    }
+    return false;
+}
+
 /// Choose appropriate find function based on options (literal vs regex)
 fn doFindMatches(text: []const u8, pattern: []const u8, options: SubstituteOptions, allocator: std.mem.Allocator) !gpu.SubstituteResult {
-    if (options.extended) {
+    if (needsRegex(pattern, options)) {
         return cpu.findMatchesRegex(text, pattern, options, allocator);
-    } else {
-        // For BRE mode (default), also use regex for special characters
-        // Check if pattern contains regex metacharacters
-        var has_meta = false;
-        var i: usize = 0;
-        while (i < pattern.len) : (i += 1) {
-            const c = pattern[i];
-            if (c == '.' or c == '*' or c == '^' or c == '$' or c == '[') {
-                has_meta = true;
-                break;
-            }
-            if (c == '\\' and i + 1 < pattern.len) {
-                const next = pattern[i + 1];
-                if (next == '+' or next == '?' or next == '|' or next == '(' or next == ')' or next == '{' or next == '}') {
-                    has_meta = true;
-                    break;
-                }
-                i += 1;
-            }
-        }
-        if (has_meta) {
-            return cpu.findMatchesRegex(text, pattern, options, allocator);
-        }
-        return cpu.findMatches(text, pattern, options, allocator);
     }
+    return cpu.findMatches(text, pattern, options, allocator);
 }
 
 fn processStdin(allocator: std.mem.Allocator, cmd: SedCommand, backend_mode: BackendMode, verbose: bool, suppress_output: bool) !void {
@@ -361,7 +359,10 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
                             break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                         };
                         defer substituter.deinit();
-                        break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
+                        break :blk (if (needsRegex(cmd.pattern, cmd.options))
+                            substituter.findMatchesRegex(text, cmd.pattern, cmd.options, allocator)
+                        else
+                            substituter.findMatches(text, cmd.pattern, cmd.options, allocator)) catch {
                             break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                         };
                     } else {
@@ -373,7 +374,10 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
                         break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                     };
                     defer substituter.deinit();
-                    break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
+                    break :blk (if (needsRegex(cmd.pattern, cmd.options))
+                        substituter.findMatchesRegex(text, cmd.pattern, cmd.options, allocator)
+                    else
+                        substituter.findMatches(text, cmd.pattern, cmd.options, allocator)) catch {
                         break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                     };
                 },
@@ -596,7 +600,10 @@ fn processSubstituteStdin(allocator: std.mem.Allocator, text: []const u8, cmd: S
                     break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
                 defer substituter.deinit();
-                break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
+                break :blk (if (needsRegex(cmd.pattern, cmd.options))
+                    substituter.findMatchesRegex(text, cmd.pattern, cmd.options, allocator)
+                else
+                    substituter.findMatches(text, cmd.pattern, cmd.options, allocator)) catch {
                     break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
             } else {
@@ -608,7 +615,10 @@ fn processSubstituteStdin(allocator: std.mem.Allocator, text: []const u8, cmd: S
                 break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
             defer substituter.deinit();
-            break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
+            break :blk (if (needsRegex(cmd.pattern, cmd.options))
+                substituter.findMatchesRegex(text, cmd.pattern, cmd.options, allocator)
+            else
+                substituter.findMatches(text, cmd.pattern, cmd.options, allocator)) catch {
                 break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
         },
@@ -896,7 +906,10 @@ fn processSubstitute(allocator: std.mem.Allocator, text: []const u8, cmd: SedCom
                     break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
                 defer substituter.deinit();
-                break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch |err| {
+                break :blk (if (needsRegex(cmd.pattern, cmd.options))
+                    substituter.findMatchesRegex(text, cmd.pattern, cmd.options, allocator)
+                else
+                    substituter.findMatches(text, cmd.pattern, cmd.options, allocator)) catch |err| {
                     if (verbose) std.debug.print("Metal failed: {}, falling back to CPU\n", .{err});
                     break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
@@ -910,7 +923,10 @@ fn processSubstitute(allocator: std.mem.Allocator, text: []const u8, cmd: SedCom
                 break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
             defer substituter.deinit();
-            break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch |err| {
+            break :blk (if (needsRegex(cmd.pattern, cmd.options))
+                substituter.findMatchesRegex(text, cmd.pattern, cmd.options, allocator)
+            else
+                substituter.findMatches(text, cmd.pattern, cmd.options, allocator)) catch |err| {
                 if (verbose) std.debug.print("Vulkan failed: {}, falling back to CPU\n", .{err});
                 break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
@@ -958,7 +974,10 @@ fn processDelete(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand
                     break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
                 defer substituter.deinit();
-                break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
+                break :blk (if (needsRegex(cmd.pattern, cmd.options))
+                    substituter.findMatchesRegex(text, cmd.pattern, cmd.options, allocator)
+                else
+                    substituter.findMatches(text, cmd.pattern, cmd.options, allocator)) catch {
                     break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
             } else {
@@ -970,7 +989,10 @@ fn processDelete(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand
                 break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
             defer substituter.deinit();
-            break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
+            break :blk (if (needsRegex(cmd.pattern, cmd.options))
+                substituter.findMatchesRegex(text, cmd.pattern, cmd.options, allocator)
+            else
+                substituter.findMatches(text, cmd.pattern, cmd.options, allocator)) catch {
                 break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
         },
@@ -1016,7 +1038,10 @@ fn processPrint(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
                     break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
                 defer substituter.deinit();
-                break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
+                break :blk (if (needsRegex(cmd.pattern, cmd.options))
+                    substituter.findMatchesRegex(text, cmd.pattern, cmd.options, allocator)
+                else
+                    substituter.findMatches(text, cmd.pattern, cmd.options, allocator)) catch {
                     break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
                 };
             } else {
@@ -1028,7 +1053,10 @@ fn processPrint(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
                 break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
             defer substituter.deinit();
-            break :blk substituter.findMatches(text, cmd.pattern, cmd.options, allocator) catch {
+            break :blk (if (needsRegex(cmd.pattern, cmd.options))
+                substituter.findMatchesRegex(text, cmd.pattern, cmd.options, allocator)
+            else
+                substituter.findMatches(text, cmd.pattern, cmd.options, allocator)) catch {
                 break :blk try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             };
         },

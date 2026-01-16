@@ -10,20 +10,17 @@
             .url = "https://ftp.gnu.org/gnu/sed/sed-4.9.tar.xz",
             .hash = "N-V-__8AAEjRoAB9ohVT_tFbBMfRujMKWFPlHUgQVEEcCW_J",
         },
-        // Regex engine for pattern matching
+        // Regex engine for pattern matching (use path for dev, update to URL before commit)
         .regex = .{
-            .url = "git+https://github.com/e-jerk/regex#main",
-            .hash = "e_jerk_regex-0.1.0-ex0qscb1AAD9BAq40H7IznBZgW049MlUMBj0WK_03mCa",
+            .path = "../regex",
         },
-        // Shared shader library
+        // Shared shader library (use path for dev, update to URL before commit)
         .shaders_common = .{
-            .url = "git+https://github.com/e-jerk/shaders-common#v0.1.0",
-            .hash = "shaders_common-0.1.0-dZ7wZ3kqAABTaMaUORx_Ezk1jtplGb5o0eCAlNQwAjng",
+            .path = "../shaders-common",
         },
-        // GPU detection and auto-selection library
+        // GPU detection and auto-selection library (use path for dev, update to URL before commit)
         .e_jerk_gpu = .{
-            .url = "git+https://github.com/e-jerk/gpu#v0.1.0",
-            .hash = "e_jerk_gpu-0.1.0-FyPePJLqAAAgxAo6-HcdPgAsQdxgJCQfuoqoco1-By9U",
+            .path = "../gpu",
         },
         // Metal bindings for Zig
         .zig_metal = .{

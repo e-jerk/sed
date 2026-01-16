@@ -1,5 +1,6 @@
 #include <metal_stdlib>
 #include "string_ops.h"
+#include "regex_ops.h"
 using namespace metal;
 
 // Configuration for substitution operation
@@ -130,5 +131,81 @@ kernel void transliterate(
             text[gid] = dest_chars[i];
             break;
         }
+    }
+}
+
+// ============================================================================
+// Regex Search Kernel - Thompson NFA execution for sed substitution
+// ============================================================================
+
+struct RegexSearchConfig {
+    uint text_len;
+    uint num_states;
+    uint start_state;
+    uint header_flags;
+    uint num_bitmaps;
+    uint max_results;
+    uint flags;
+    uint _pad;
+};
+
+struct RegexMatchOutput {
+    uint start;
+    uint end;
+    uint line_start;
+    uint flags;
+};
+
+// Line-based regex search for sed (one thread per line)
+kernel void regex_find_matches(
+    device const uchar* text [[buffer(0)]],
+    constant RegexState* states [[buffer(1)]],
+    constant uint* bitmaps [[buffer(2)]],
+    constant RegexSearchConfig& config [[buffer(3)]],
+    constant RegexHeader& header [[buffer(4)]],
+    device RegexMatchOutput* results [[buffer(5)]],
+    device atomic_uint* result_count [[buffer(6)]],
+    device atomic_uint* total_matches [[buffer(7)]],
+    device const uint* line_offsets [[buffer(8)]],
+    device const uint* line_lengths [[buffer(9)]],
+    uint gid [[thread_position_in_grid]],
+    uint num_lines [[threads_per_grid]]
+) {
+    if (gid >= num_lines) return;
+
+    uint line_start = line_offsets[gid];
+    uint line_len = line_lengths[gid];
+
+    // Search for all regex matches in this line (for global substitution)
+    uint pos = 0;
+
+    while (pos < line_len) {
+        uint match_start, match_end;
+        bool found = regex_find(
+            &header,
+            states,
+            bitmaps,
+            text + line_start,
+            line_len,
+            pos,
+            &match_start,
+            &match_end
+        );
+
+        if (!found) break;
+
+        // Record this match
+        uint idx = atomic_fetch_add_explicit(result_count, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(total_matches, 1, memory_order_relaxed);
+
+        if (idx < config.max_results) {
+            results[idx].start = line_start + match_start;
+            results[idx].end = line_start + match_end;
+            results[idx].line_start = line_start;
+            results[idx].flags = 1;  // FLAG_VALID
+        }
+
+        // Move past this match
+        pos = (match_end > match_start) ? match_end : match_start + 1;
     }
 }

@@ -16,6 +16,9 @@ pub const metal = if (build_options.is_macos) @import("metal.zig") else struct {
 };
 pub const vulkan = @import("vulkan.zig");
 
+// Regex compiler for GPU regex support
+pub const regex_compiler = @import("regex_compiler.zig");
+
 // Configuration
 pub const BATCH_SIZE: usize = 1024 * 1024;
 pub const MAX_GPU_BUFFER_SIZE: usize = 64 * 1024 * 1024;
@@ -96,6 +99,68 @@ pub fn detectBestBackend() Backend {
 pub fn shouldUseGpu(text_len: usize) bool {
     return text_len >= MIN_GPU_SIZE;
 }
+
+// ============================================================================
+// GPU Regex Types (matching Metal shader structs)
+// ============================================================================
+
+pub const MAX_REGEX_STATES: u32 = 256;
+pub const BITMAP_WORDS_PER_CLASS: u32 = 8;
+
+pub const RegexStateType = enum(u8) {
+    literal = 0,
+    char_class = 1,
+    dot = 2,
+    split = 3,
+    match = 4,
+    anchor_start = 5,
+    anchor_end = 6,
+    word_boundary = 7,
+};
+
+pub const RegexState = extern struct {
+    type: u8,
+    flags: u8,
+    out: u16,
+    out2: u16,
+    literal_char: u8,
+    group_idx: u8,
+    bitmap_offset: u32,
+
+    pub const FLAG_CASE_INSENSITIVE: u8 = 0x01;
+    pub const FLAG_NEGATED: u8 = 0x02;
+};
+
+pub const RegexHeader = extern struct {
+    num_states: u32,
+    start_state: u32,
+    num_groups: u32,
+    flags: u32,
+
+    pub const FLAG_ANCHORED_START: u32 = 0x01;
+    pub const FLAG_ANCHORED_END: u32 = 0x02;
+    pub const FLAG_CASE_INSENSITIVE: u32 = 0x04;
+};
+
+pub const RegexSearchConfig = extern struct {
+    text_len: u32,
+    num_states: u32,
+    start_state: u32,
+    header_flags: u32,
+    num_bitmaps: u32,
+    max_results: u32,
+    flags: u32,
+    _pad: u32 = 0,
+};
+
+pub const RegexMatchResult = extern struct {
+    start: u32,
+    end: u32,
+    line_start: u32,
+    flags: u32,
+
+    pub const FLAG_VALID: u32 = 0x01;
+};
 
 pub fn formatBytes(bytes: usize) struct { value: f64, unit: []const u8 } {
     if (bytes >= 1024 * 1024 * 1024) return .{ .value = @as(f64, @floatFromInt(bytes)) / (1024 * 1024 * 1024), .unit = "GB" };
