@@ -58,25 +58,25 @@ sed -V 's/pattern/replacement/g' file.txt
 
 ## GNU Feature Compatibility
 
-| Feature | CPU-Optimized | GNU Backend | Metal | Vulkan | Status |
-|---------|:-------------:|:-----------:|:-----:|:------:|--------|
-| `s/pattern/replacement/` | ✓ | ✓ | ✓ | ✓ | Native |
-| `s///g` global flag | ✓ | ✓ | ✓ | ✓ | Native |
-| `s///i` case insensitive | ✓ | ✓ | ✓ | ✓ | Native |
-| `/pattern/d` delete | ✓ | ✓ | ✓ | ✓ | Native |
-| `/pattern/p` print | ✓ | ✓ | ✓ | ✓ | Native |
-| `y/src/dst/` transliterate | ✓ | ✓ | — | — | Native (CPU) |
-| `&` matched text | ✓ | ✓ | ✓ | ✓ | Native |
-| `\n` `\t` escape sequences | ✓ | ✓ | ✓ | ✓ | Native |
-| `-i` in-place edit | ✓ | ✓ | ✓ | ✓ | Native |
-| `-n` suppress output | ✓ | ✓ | ✓ | ✓ | Native |
-| `-e` multiple expressions | ✓ | ✓ | — | — | **Native** |
-| Line addressing (`1,5s/...`) | ✓ | ✓ | — | — | **Native** |
-| `-E/-r` extended regex | ✓ | ✓ | ✓ | ✓ | **Native** |
-| `\1` backreferences | — | ✓ | — | — | GNU fallback |
-| `a\` `i\` `c\` commands | — | ✓ | — | — | GNU fallback |
-| Hold space (`h/H/g/G/x`) | — | ✓ | — | — | GNU fallback |
-| Branching (`b/t/:label`) | — | ✓ | — | — | GNU fallback |
+| Feature | CPU | Metal | Vulkan | GPU Speedup | Status |
+|---------|:---:|:-----:|:------:|:-----------:|--------|
+| `s/pattern/replacement/` | ✓ | ✓ | ✓ | **16x** | Native |
+| `s///g` global flag | ✓ | ✓ | ✓ | **8x** | Native |
+| `s///i` case insensitive | ✓ | ✓ | ✓ | **5.5x** | Native |
+| `/pattern/d` delete | ✓ | ✓ | ✓ | **8x** | Native |
+| `/pattern/p` print | ✓ | ✓ | ✓ | **8x** | Native |
+| `-E/-r` extended regex | ✓ | ✓ | ✓ | **5-10x** | **Native** |
+| `y/src/dst/` transliterate | ✓ | — | — | CPU only | Native |
+| `&` matched text | ✓ | ✓ | ✓ | **8x** | Native |
+| `\n` `\t` escape sequences | ✓ | ✓ | ✓ | **8x** | Native |
+| `-i` in-place edit | ✓ | ✓ | ✓ | **8x** | Native |
+| `-n` suppress output | ✓ | ✓ | ✓ | **8x** | Native |
+| `-e` multiple expressions | ✓ | — | — | CPU only | **Native** |
+| Line addressing (`1,5s/...`) | ✓ | — | — | CPU only | **Native** |
+| `\1` backreferences | — | — | — | — | GNU fallback |
+| `a\` `i\` `c\` commands | — | — | — | — | GNU fallback |
+| Hold space (`h/H/g/G/x`) | — | — | — | — | GNU fallback |
+| Branching (`b/t/:label`) | — | — | — | — | GNU fallback |
 
 **Test Coverage**: 37/37 GNU compatibility tests passing
 
