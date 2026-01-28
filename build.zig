@@ -5,11 +5,26 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const is_macos = target.result.os.tag == .macos;
+    const is_linux = target.result.os.tag == .linux;
     const is_native = target.result.os.tag == @import("builtin").os.tag;
+
+    // GNU build option: enables all backends (GPL3 license)
+    // Standard build (default): platform-specific backends only (Unlicense)
+    // - macOS standard: Metal + CPU
+    // - Linux standard: Vulkan + CPU
+    // - GNU build: all available backends for the platform
+    const gnu = b.option(bool, "gnu", "Enable GNU/GPL3 build with all backends") orelse false;
+
+    // Determine which backends to enable
+    const enable_metal = is_macos;
+    const enable_vulkan = is_linux or (is_macos and gnu);
 
     // Build options to pass compile-time config to source
     const build_options = b.addOptions();
     build_options.addOption(bool, "is_macos", is_macos);
+    build_options.addOption(bool, "enable_metal", enable_metal);
+    build_options.addOption(bool, "enable_vulkan", enable_vulkan);
+    build_options.addOption(bool, "gnu_build", gnu);
     const build_options_module = build_options.createModule();
 
     // e_jerk_gpu library for GPU detection and auto-selection (also provides zigtrait)
@@ -148,20 +163,21 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // Platform-specific linking
-    if (is_macos) {
-        if (is_native) {
+    // Platform-specific linking based on enabled backends
+    if (is_native) {
+        if (enable_metal) {
             exe.linkFramework("Foundation");
             exe.linkFramework("Metal");
             exe.linkFramework("QuartzCore");
-
-            // MoltenVK from Homebrew for Vulkan on macOS
-            exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-            exe.linkSystemLibrary("MoltenVK");
         }
-    } else {
-        if (is_native) {
-            exe.linkSystemLibrary("vulkan");
+        if (enable_vulkan) {
+            if (is_macos) {
+                // MoltenVK from Homebrew for Vulkan on macOS
+                exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
+                exe.linkSystemLibrary("MoltenVK");
+            } else {
+                exe.linkSystemLibrary("vulkan");
+            }
         }
     }
 
@@ -196,17 +212,19 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    if (is_macos) {
-        if (is_native) {
+    if (is_native) {
+        if (enable_metal) {
             bench_exe.linkFramework("Foundation");
             bench_exe.linkFramework("Metal");
             bench_exe.linkFramework("QuartzCore");
-            bench_exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-            bench_exe.linkSystemLibrary("MoltenVK");
         }
-    } else {
-        if (is_native) {
-            bench_exe.linkSystemLibrary("vulkan");
+        if (enable_vulkan) {
+            if (is_macos) {
+                bench_exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
+                bench_exe.linkSystemLibrary("MoltenVK");
+            } else {
+                bench_exe.linkSystemLibrary("vulkan");
+            }
         }
     }
 
@@ -239,17 +257,19 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    if (is_macos) {
-        if (is_native) {
+    if (is_native) {
+        if (enable_metal) {
             smoke_exe.linkFramework("Foundation");
             smoke_exe.linkFramework("Metal");
             smoke_exe.linkFramework("QuartzCore");
-            smoke_exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-            smoke_exe.linkSystemLibrary("MoltenVK");
         }
-    } else {
-        if (is_native) {
-            smoke_exe.linkSystemLibrary("vulkan");
+        if (enable_vulkan) {
+            if (is_macos) {
+                smoke_exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
+                smoke_exe.linkSystemLibrary("MoltenVK");
+            } else {
+                smoke_exe.linkSystemLibrary("vulkan");
+            }
         }
     }
 
@@ -281,12 +301,20 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    if (is_macos and is_native) {
-        main_tests.linkFramework("Foundation");
-        main_tests.linkFramework("Metal");
-        main_tests.linkFramework("QuartzCore");
-        main_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-        main_tests.linkSystemLibrary("MoltenVK");
+    if (is_native) {
+        if (enable_metal) {
+            main_tests.linkFramework("Foundation");
+            main_tests.linkFramework("Metal");
+            main_tests.linkFramework("QuartzCore");
+        }
+        if (enable_vulkan) {
+            if (is_macos) {
+                main_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
+                main_tests.linkSystemLibrary("MoltenVK");
+            } else {
+                main_tests.linkSystemLibrary("vulkan");
+            }
+        }
     }
 
     // Unit tests from tests/unit_tests.zig
@@ -306,17 +334,25 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    if (is_macos and is_native) {
-        unit_tests.linkFramework("Foundation");
-        unit_tests.linkFramework("Metal");
-        unit_tests.linkFramework("QuartzCore");
-        unit_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-        unit_tests.linkSystemLibrary("MoltenVK");
+    if (is_native) {
+        if (enable_metal) {
+            unit_tests.linkFramework("Foundation");
+            unit_tests.linkFramework("Metal");
+            unit_tests.linkFramework("QuartzCore");
+        }
+        if (enable_vulkan) {
+            if (is_macos) {
+                unit_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
+                unit_tests.linkSystemLibrary("MoltenVK");
+            } else {
+                unit_tests.linkSystemLibrary("vulkan");
+            }
+        }
     }
 
-    // Metal shader compilation check (macOS only)
+    // Metal shader compilation check (only when Metal is enabled)
     // This validates the shader compiles without warnings at build time
-    if (is_macos) {
+    if (enable_metal) {
         // First write preprocessed shader to a file with .metal extension
         const write_shader = b.addWriteFiles();
         _ = write_shader.addCopyFile(preprocessed_metal, "substitute_check.metal");
@@ -351,12 +387,20 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    if (is_macos and is_native) {
-        regex_tests.linkFramework("Foundation");
-        regex_tests.linkFramework("Metal");
-        regex_tests.linkFramework("QuartzCore");
-        regex_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-        regex_tests.linkSystemLibrary("MoltenVK");
+    if (is_native) {
+        if (enable_metal) {
+            regex_tests.linkFramework("Foundation");
+            regex_tests.linkFramework("Metal");
+            regex_tests.linkFramework("QuartzCore");
+        }
+        if (enable_vulkan) {
+            if (is_macos) {
+                regex_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
+                regex_tests.linkSystemLibrary("MoltenVK");
+            } else {
+                regex_tests.linkSystemLibrary("vulkan");
+            }
+        }
     }
 
     const run_main_tests = b.addRunArtifact(main_tests);
