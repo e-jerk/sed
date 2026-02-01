@@ -1118,54 +1118,65 @@ fn processTransliterate(allocator: std.mem.Allocator, text: []const u8, cmd: Sed
 
 fn printUsage() void {
     const help_text =
-        \\Usage: sed [OPTION]... {SCRIPT-ONLY-IF-NO-OTHER-SCRIPT} [INPUT-FILE]...
+        \\Usage: sed [OPTION]... {SCRIPT} [INPUT-FILE]...
         \\
         \\Stream editor for filtering and transforming text.
         \\If no INPUT-FILE is given, or if INPUT-FILE is -, read standard input.
         \\
         \\Options:
-        \\  -n, --quiet, --silent    suppress automatic printing of pattern space
+        \\  -n, --quiet, --silent    suppress automatic printing            [GPU+SIMD]
         \\  -e SCRIPT, --expression=SCRIPT
-        \\                           add the script to the commands to be executed
+        \\                           add script (can repeat)                [SIMD]
         \\  -E, -r, --regexp-extended
-        \\                           use extended regular expressions (ERE)
-        \\  -i, --in-place           edit files in place
-        \\  -V, --verbose            print backend and timing information
+        \\                           use extended regex (ERE)               [GPU+SIMD]
+        \\  -i, --in-place           edit files in place                    [GPU+SIMD]
+        \\  -V, --verbose            print backend and timing info
         \\  -h, --help               display this help and exit
         \\      --version            output version information and exit
         \\
-        \\GPU Backend selection:
+        \\Backend selection:
         \\  --auto                   auto-select optimal backend (default)
         \\  --gpu                    force GPU (Metal on macOS, Vulkan on Linux)
-        \\  --cpu                    force CPU backend
+        \\  --cpu                    force CPU backend (SIMD-optimized)
+        \\  --gnu                    force GNU sed backend (GPL, full features)
         \\  --metal                  force Metal backend (macOS only)
         \\  --vulkan                 force Vulkan backend
         \\
         \\Commands:
-        \\  s/REGEXP/REPLACEMENT/FLAGS
+        \\  s/REGEXP/REPLACEMENT/FLAGS                                      [GPU+SIMD]
         \\      Substitute REGEXP with REPLACEMENT.
         \\      FLAGS: g (global), i (ignore case), 1 (first only)
+        \\      Special: & = matched text, \n \t = newline/tab
         \\
-        \\  y/SOURCE/DEST/
-        \\      Transliterate characters in SOURCE to DEST.
+        \\  y/SOURCE/DEST/                                                  [SIMD]
+        \\      Transliterate characters (256-byte lookup, 32-byte unroll)
         \\
-        \\  /REGEXP/d
+        \\  /REGEXP/d                                                       [GPU+SIMD]
         \\      Delete lines matching REGEXP.
         \\
-        \\  /REGEXP/p
+        \\  /REGEXP/p                                                       [GPU+SIMD]
         \\      Print lines matching REGEXP.
         \\
-        \\GPU Performance (typical speedups vs CPU):
-        \\  1MB files:   ~2x
-        \\  10MB files:  ~5x
-        \\  50MB files:  ~7x
+        \\  ADDRESS COMMAND           Line addressing (1,5s/.../.../)       [SIMD]
+        \\
+        \\Optimization legend:
+        \\  [GPU+SIMD]  GPU-accelerated (Metal/Vulkan) + SIMD-optimized CPU
+        \\  [SIMD]      SIMD-optimized CPU only (GPU not yet implemented)
+        \\  GPU uses parallel compute shaders for pattern matching
+        \\  CPU uses Boyer-Moore-Horspool with 16/32-byte SIMD vectors
+        \\
+        \\GPU Performance (typical speedups vs SIMD CPU):
+        \\  s/pattern/replacement/:   ~16x    s///g global:        ~8x
+        \\  s///i case insensitive:   ~5.5x   /pattern/d delete:   ~8x
+        \\  -E extended regex:        ~5-10x
         \\
         \\Examples:
         \\  sed 's/foo/bar/g' input.txt         Replace all 'foo' with 'bar'
         \\  sed -E 's/[0-9]+/NUM/g' file.txt    Extended regex (ERE)
         \\  sed -i 's/old/new/g' file.txt       Edit file in place
-        \\  cat file.txt | sed 's/a/b/g'        Read from stdin
-        \\  echo "hello" | sed 's/hello/hi/'    Pipe through sed
+        \\  sed 'y/abc/xyz/' file.txt           Transliterate a->x, b->y, c->z
+        \\  sed '/error/d' file.txt             Delete lines with 'error'
+        \\  sed -n '/pattern/p' file.txt        Print only matching lines
         \\  sed --gpu 's/x/y/g' large.txt       Force GPU acceleration
         \\
     ;

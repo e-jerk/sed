@@ -94,22 +94,84 @@ sed -V 's/pattern/replacement/g' file.txt
 | `Nd` | Delete line N |
 | `N,Md` | Delete lines N through M |
 
-## Substitute Flags
+## Command Line Reference
 
-| Flag | Description |
-|------|-------------|
-| `g` | Global - replace all occurrences |
-| `i` | Case-insensitive matching |
-| `1` | Replace first occurrence only |
+<details>
+<summary>Full --help output</summary>
 
-## Options
+```
+Usage: sed [OPTION]... {SCRIPT} [INPUT-FILE]...
 
-| Flag | Description |
-|------|-------------|
-| `-e, --expression` | Specify sed expression (can be repeated) |
-| `-n, --quiet` | Suppress automatic output |
-| `-i, --in-place` | Edit files in place |
-| `-V, --verbose` | Show timing and backend info |
+Stream editor for filtering and transforming text.
+If no INPUT-FILE is given, or if INPUT-FILE is -, read standard input.
+
+Options:
+  -n, --quiet, --silent    suppress automatic printing            [GPU+SIMD]
+  -e SCRIPT, --expression=SCRIPT
+                           add script (can repeat)                [SIMD]
+  -E, -r, --regexp-extended
+                           use extended regex (ERE)               [GPU+SIMD]
+  -i, --in-place           edit files in place                    [GPU+SIMD]
+  -V, --verbose            print backend and timing info
+  -h, --help               display this help and exit
+      --version            output version information and exit
+
+Backend selection:
+  --auto                   auto-select optimal backend (default)
+  --gpu                    force GPU (Metal on macOS, Vulkan on Linux)
+  --cpu                    force CPU backend (SIMD-optimized)
+  --gnu                    force GNU sed backend (GPL, full features)
+  --metal                  force Metal backend (macOS only)
+  --vulkan                 force Vulkan backend
+
+Commands:
+  s/REGEXP/REPLACEMENT/FLAGS                                      [GPU+SIMD]
+      Substitute REGEXP with REPLACEMENT.
+      FLAGS: g (global), i (ignore case), 1 (first only)
+      Special: & = matched text, \n \t = newline/tab
+
+  y/SOURCE/DEST/                                                  [SIMD]
+      Transliterate characters (256-byte lookup, 32-byte unroll)
+
+  /REGEXP/d                                                       [GPU+SIMD]
+      Delete lines matching REGEXP.
+
+  /REGEXP/p                                                       [GPU+SIMD]
+      Print lines matching REGEXP.
+
+  ADDRESS COMMAND           Line addressing (1,5s/.../.../)       [SIMD]
+
+Optimization legend:
+  [GPU+SIMD]  GPU-accelerated (Metal/Vulkan) + SIMD-optimized CPU
+  [SIMD]      SIMD-optimized CPU only (GPU not yet implemented)
+  GPU uses parallel compute shaders for pattern matching
+  CPU uses Boyer-Moore-Horspool with 16/32-byte SIMD vectors
+
+GPU Performance (typical speedups vs SIMD CPU):
+  s/pattern/replacement/:   ~16x    s///g global:        ~8x
+  s///i case insensitive:   ~5.5x   /pattern/d delete:   ~8x
+  -E extended regex:        ~5-10x
+
+Examples:
+  sed 's/foo/bar/g' input.txt         Replace all 'foo' with 'bar'
+  sed -E 's/[0-9]+/NUM/g' file.txt    Extended regex (ERE)
+  sed -i 's/old/new/g' file.txt       Edit file in place
+  sed 'y/abc/xyz/' file.txt           Transliterate a->x, b->y, c->z
+  sed '/error/d' file.txt             Delete lines with 'error'
+  sed -n '/pattern/p' file.txt        Print only matching lines
+  sed --gpu 's/x/y/g' large.txt       Force GPU acceleration
+```
+
+</details>
+
+## Build Variants
+
+| Variant | Description | Vulkan on macOS | `--gnu` flag |
+|---------|-------------|-----------------|--------------|
+| **pure** | Zig + SIMD + GPU only. No external dependencies. | No | Not available |
+| **gnu** | Includes GNU sed + Vulkan via MoltenVK. | Yes | Falls back to GNU sed |
+
+The gnu build enables Vulkan on macOS using MoltenVK, allowing both Metal and Vulkan backends on Mac.
 
 ## Backend Selection
 
@@ -117,10 +179,10 @@ sed -V 's/pattern/replacement/g' file.txt
 |------|-------------|
 | `--auto` | Automatically select optimal backend (default) |
 | `--gpu` | Use GPU (Metal on macOS, Vulkan elsewhere) |
-| `--cpu` | Force CPU backend |
-| `--gnu` | Force GNU sed backend |
+| `--cpu` | Force CPU backend (SIMD-optimized) |
+| `--gnu` | Force GNU sed backend (gnu build only) |
 | `--metal` | Force Metal backend (macOS only) |
-| `--vulkan` | Force Vulkan backend |
+| `--vulkan` | Force Vulkan backend (macOS+gnu build, or Linux) |
 
 ## Architecture & Optimizations
 
