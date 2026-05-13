@@ -122,6 +122,27 @@ pub fn main() !void {
                 try expressions.append(allocator, args[i]);
                 saw_explicit_expr = true;
             }
+        } else if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--file")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                const file = std.fs.cwd().openFile(args[i], .{}) catch |err| {
+                    std.debug.print("sed: {s}: {}\n", .{ args[i], err });
+                    return;
+                };
+                defer file.close();
+                const content = file.readToEndAlloc(allocator, 1024 * 1024) catch |err| {
+                    std.debug.print("sed: {s}: {}\n", .{ args[i], err });
+                    return;
+                };
+                defer allocator.free(content);
+                var iter = std.mem.splitScalar(u8, content, '\n');
+                while (iter.next()) |line| {
+                    if (line.len > 0) {
+                        try expressions.append(allocator, try allocator.dupe(u8, line));
+                    }
+                }
+                saw_explicit_expr = true;
+            }
         } else if (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "--silent")) {
             suppress_output = true;
         } else if (std.mem.eql(u8, arg, "-E") or std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "--regexp-extended")) {
