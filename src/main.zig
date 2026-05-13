@@ -22,6 +22,8 @@ const CommandType = enum {
     delete, // /pattern/d
     print, // /pattern/p
     transliterate, // y/source/dest/
+    read_file, // r file - append file contents after matching lines
+    write_file, // w file - write matching lines to file
 };
 
 /// Line address for sed commands
@@ -48,6 +50,7 @@ const SedCommand = struct {
     replacement: []const u8,
     options: SubstituteOptions,
     address: ?Address = null, // Optional line address
+    file_path: []const u8 = "", // For r/w commands
 };
 
 /// Process replacement string, expanding special sequences like & (matched text)
@@ -324,6 +327,13 @@ fn countLines(text: []const u8) u32 {
     return if (count == 0) 1 else count;
 }
 
+/// Read file contents for sed r command
+fn readFileContents(allocator: std.mem.Allocator, filepath: []const u8) ![]u8 {
+    const file = try std.fs.cwd().openFile(filepath, .{});
+    defer file.close();
+    return try file.readToEndAlloc(allocator, 1024 * 1024);
+}
+
 /// Apply a single command to text and return the result
 fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend) ![]u8 {
     // Count total lines for address handling
@@ -512,6 +522,110 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
                 }
             }
             return copy;
+        },
+        .read_file => {
+            // Read file contents
+            const file_content = readFileContents(allocator, cmd.file_path) catch |err| {
+                std.debug.print("sed: {s}: {}\n", .{ cmd.file_path, err });
+                return allocator.dupe(u8, text);
+            };
+            defer allocator.free(file_content);
+
+            var output: std.ArrayListUnmanaged(u8) = .{};
+            errdefer output.deinit(allocator);
+
+            // Determine which lines should have file appended
+            // If no pattern and no address, append after every line
+            var matched_lines = std.AutoHashMap(u32, void).init(allocator);
+            defer matched_lines.deinit();
+
+            if (cmd.pattern.len > 0) {
+                var result = try doFindMatches(text, cmd.pattern, cmd.options, allocator);
+                defer result.deinit();
+                for (result.matches) |match| {
+                    try matched_lines.put(match.line_num, {});
+                }
+            }
+
+            const use_address = cmd.address != null;
+            const match_all_lines = cmd.pattern.len == 0 and cmd.address == null;
+
+            var line_num: u32 = 1;
+            var line_start: usize = 0;
+            var i: usize = 0;
+
+            while (i < text.len) : (i += 1) {
+                if (text[i] == '\n') {
+                    const should_append = match_all_lines or if (use_address) cmd.address.?.matches(line_num, total_lines) else matched_lines.contains(line_num - 1);
+                    try output.appendSlice(allocator, text[line_start .. i + 1]);
+                    if (should_append) {
+                        try output.appendSlice(allocator, file_content);
+                        if (file_content.len > 0 and file_content[file_content.len - 1] != '\n') {
+                            try output.append(allocator, '\n');
+                        }
+                    }
+                    line_start = i + 1;
+                    line_num += 1;
+                }
+            }
+            // Handle last line without newline
+            if (line_start < text.len) {
+                const should_append = match_all_lines or if (use_address) cmd.address.?.matches(line_num, total_lines) else matched_lines.contains(line_num - 1);
+                try output.appendSlice(allocator, text[line_start..]);
+                if (should_append) {
+                    try output.appendSlice(allocator, file_content);
+                }
+            }
+
+            return output.toOwnedSlice(allocator);
+        },
+        .write_file => {
+            // Write matching lines to file, return original text unchanged
+            var file = std.fs.cwd().createFile(cmd.file_path, .{}) catch |err| {
+                std.debug.print("sed: {s}: {}\n", .{ cmd.file_path, err });
+                return allocator.dupe(u8, text);
+            };
+            defer file.close();
+
+            // Determine which lines should be written
+            // If no pattern and no address, write all lines
+            var matched_lines = std.AutoHashMap(u32, void).init(allocator);
+            defer matched_lines.deinit();
+
+            if (cmd.pattern.len > 0) {
+                var result = try doFindMatches(text, cmd.pattern, cmd.options, allocator);
+                defer result.deinit();
+                for (result.matches) |match| {
+                    try matched_lines.put(match.line_num, {});
+                }
+            }
+
+            const use_address = cmd.address != null;
+            const match_all_lines = cmd.pattern.len == 0 and cmd.address == null;
+
+            var line_num: u32 = 1;
+            var line_start: usize = 0;
+            var i: usize = 0;
+
+            while (i < text.len) : (i += 1) {
+                if (text[i] == '\n') {
+                    const should_write = match_all_lines or if (use_address) cmd.address.?.matches(line_num, total_lines) else matched_lines.contains(line_num - 1);
+                    if (should_write) {
+                        try file.writeAll(text[line_start .. i + 1]);
+                    }
+                    line_start = i + 1;
+                    line_num += 1;
+                }
+            }
+            // Handle last line without newline
+            if (line_start < text.len) {
+                const should_write = match_all_lines or if (use_address) cmd.address.?.matches(line_num, total_lines) else matched_lines.contains(line_num - 1);
+                if (should_write) {
+                    try file.writeAll(text[line_start..]);
+                }
+            }
+
+            return allocator.dupe(u8, text);
         },
     }
 }
@@ -847,6 +961,32 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
         };
     }
 
+    // Check for 'r FILE' (read file and append after matching lines)
+    if (remaining[0] == 'r') {
+        const file_path = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " ") else "";
+        return SedCommand{
+            .cmd_type = .read_file,
+            .pattern = "", // No pattern - use address only
+            .replacement = "",
+            .options = .{},
+            .address = address,
+            .file_path = file_path,
+        };
+    }
+
+    // Check for 'w FILE' (write matching lines to file)
+    if (remaining[0] == 'w') {
+        const file_path = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " ") else "";
+        return SedCommand{
+            .cmd_type = .write_file,
+            .pattern = "", // No pattern - use address only
+            .replacement = "",
+            .options = .{},
+            .address = address,
+            .file_path = file_path,
+        };
+    }
+
     // Check for address/pattern command (/pattern/d or /pattern/p)
     if (remaining[0] == '/') {
         var pattern_end: usize = 1;
@@ -866,6 +1006,28 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
         }
 
         const cmd_char = if (pattern_end + 1 < remaining.len) remaining[pattern_end + 1] else 'p';
+
+        if (cmd_char == 'r') {
+            const file_path = if (pattern_end + 2 < remaining.len) std.mem.trimLeft(u8, remaining[pattern_end + 2 ..], " ") else "";
+            return SedCommand{
+                .cmd_type = .read_file,
+                .pattern = pattern,
+                .replacement = "",
+                .options = options,
+                .address = address,
+                .file_path = file_path,
+            };
+        } else if (cmd_char == 'w') {
+            const file_path = if (pattern_end + 2 < remaining.len) std.mem.trimLeft(u8, remaining[pattern_end + 2 ..], " ") else "";
+            return SedCommand{
+                .cmd_type = .write_file,
+                .pattern = pattern,
+                .replacement = "",
+                .options = options,
+                .address = address,
+                .file_path = file_path,
+            };
+        }
 
         return SedCommand{
             .cmd_type = if (cmd_char == 'd') .delete else .print,
