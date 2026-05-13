@@ -107,7 +107,7 @@ pub fn main() !void {
     var files: std.ArrayListUnmanaged([]const u8) = .{};
     defer files.deinit(allocator);
     var verbose = false;
-    var in_place = false;
+    var in_place_suffix: ?[]const u8 = null;
     var suppress_output = false;
     var use_extended_regex = false; // ERE mode (-E/-r)
     var saw_explicit_expr = false; // Track if -e was used
@@ -147,8 +147,14 @@ pub fn main() !void {
             suppress_output = true;
         } else if (std.mem.eql(u8, arg, "-E") or std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "--regexp-extended")) {
             use_extended_regex = true;
-        } else if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--in-place")) {
-            in_place = true;
+        } else if (std.mem.eql(u8, arg, "-i")) {
+            in_place_suffix = "";
+        } else if (std.mem.startsWith(u8, arg, "-i")) {
+            in_place_suffix = arg[2..]; // -i.bak -> .bak
+        } else if (std.mem.eql(u8, arg, "--in-place")) {
+            in_place_suffix = "";
+        } else if (std.mem.startsWith(u8, arg, "--in-place=")) {
+            in_place_suffix = arg["--in-place=".len..];
         } else if (std.mem.eql(u8, arg, "--cpu") or std.mem.eql(u8, arg, "--cpu-optimized")) {
             backend_mode = .cpu_mode;
         } else if (std.mem.eql(u8, arg, "--gnu")) {
@@ -225,7 +231,7 @@ pub fn main() !void {
             if (std.mem.eql(u8, filepath, "-")) {
                 try processStdinMulti(allocator, commands.items, backend_mode, verbose, suppress_output);
             } else {
-                try processFileMulti(allocator, filepath, commands.items, backend_mode, verbose, in_place, suppress_output);
+                try processFileMulti(allocator, filepath, commands.items, backend_mode, verbose, in_place_suffix, suppress_output);
             }
         }
     }
@@ -563,7 +569,7 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
 }
 
 /// Process file with multiple commands
-fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands: []const SedCommand, backend_mode: BackendMode, verbose: bool, in_place: bool, suppress_output: bool) !void {
+fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands: []const SedCommand, backend_mode: BackendMode, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool) !void {
     const file = std.fs.cwd().openFile(filepath, .{}) catch |err| {
         std.debug.print("Error opening {s}: {}\n", .{ filepath, err });
         return;
@@ -603,7 +609,13 @@ fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands
     defer allocator.free(current_text);
 
     // Write output
-    if (in_place) {
+    if (in_place_suffix) |suffix| {
+        // Create backup if suffix is non-empty
+        if (suffix.len > 0) {
+            const backup_path = try std.mem.concat(allocator, u8, &.{ filepath, suffix });
+            defer allocator.free(backup_path);
+            try std.fs.cwd().copyFile(filepath, std.fs.cwd(), backup_path, .{});
+        }
         const out_file = try std.fs.cwd().createFile(filepath, .{});
         defer out_file.close();
         try out_file.writeAll(current_text);
@@ -867,7 +879,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
     return error.InvalidExpression;
 }
 
-fn processFile(allocator: std.mem.Allocator, filepath: []const u8, cmd: SedCommand, backend_mode: BackendMode, verbose: bool, in_place: bool, suppress_output: bool) !void {
+fn processFile(allocator: std.mem.Allocator, filepath: []const u8, cmd: SedCommand, backend_mode: BackendMode, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool) !void {
     const file = std.fs.cwd().openFile(filepath, .{}) catch |err| {
         std.debug.print("Error opening {s}: {}\n", .{ filepath, err });
         return;
@@ -899,10 +911,10 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, cmd: SedComma
     }
 
     switch (cmd.cmd_type) {
-        .substitute => try processSubstitute(allocator, text, cmd, backend, verbose, in_place, suppress_output, filepath),
+        .substitute => try processSubstitute(allocator, text, cmd, backend, verbose, in_place_suffix, suppress_output, filepath),
         .delete => try processDelete(allocator, text, cmd, backend, verbose, suppress_output),
         .print => try processPrint(allocator, text, cmd, backend, verbose, suppress_output),
-        .transliterate => try processTransliterate(allocator, text, cmd, backend, verbose, in_place, suppress_output, filepath),
+        .transliterate => try processTransliterate(allocator, text, cmd, backend, verbose, in_place_suffix, suppress_output, filepath),
     }
 }
 
@@ -917,7 +929,7 @@ fn selectOptimalBackend(pattern_len: usize, file_size: u64) gpu.Backend {
     return .vulkan;
 }
 
-fn processSubstitute(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, in_place: bool, suppress_output: bool, filepath: []const u8) !void {
+fn processSubstitute(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool, filepath: []const u8) !void {
     // Find matches
     var result = switch (backend) {
         .metal => blk: {
@@ -977,7 +989,13 @@ fn processSubstitute(allocator: std.mem.Allocator, text: []const u8, cmd: SedCom
     // Append remaining text
     try output.appendSlice(allocator, text[last_pos..]);
 
-    if (in_place) {
+    if (in_place_suffix) |suffix| {
+        // Create backup if suffix is non-empty
+        if (suffix.len > 0) {
+            const backup_path = try std.mem.concat(allocator, u8, &.{ filepath, suffix });
+            defer allocator.free(backup_path);
+            try std.fs.cwd().copyFile(filepath, std.fs.cwd(), backup_path, .{});
+        }
         const out_file = try std.fs.cwd().createFile(filepath, .{});
         defer out_file.close();
         try out_file.writeAll(output.items);
@@ -1114,7 +1132,7 @@ fn processPrint(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
     }
 }
 
-fn processTransliterate(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, in_place: bool, suppress_output: bool, filepath: []const u8) !void {
+fn processTransliterate(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool, filepath: []const u8) !void {
     // Make a mutable copy
     const mutable_text = try allocator.alloc(u8, text.len);
     defer allocator.free(mutable_text);
@@ -1128,7 +1146,13 @@ fn processTransliterate(allocator: std.mem.Allocator, text: []const u8, cmd: Sed
         std.debug.print("Transliterated {d} bytes\n\n", .{mutable_text.len});
     }
 
-    if (in_place) {
+    if (in_place_suffix) |suffix| {
+        // Create backup if suffix is non-empty
+        if (suffix.len > 0) {
+            const backup_path = try std.mem.concat(allocator, u8, &.{ filepath, suffix });
+            defer allocator.free(backup_path);
+            try std.fs.cwd().copyFile(filepath, std.fs.cwd(), backup_path, .{});
+        }
         const out_file = try std.fs.cwd().createFile(filepath, .{});
         defer out_file.close();
         try out_file.writeAll(mutable_text);
