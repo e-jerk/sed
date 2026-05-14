@@ -64,6 +64,8 @@ const CommandType = enum {
     label, // :label - define a branch target
     branch, // t label - branch to label if last s succeeded
     branch_not, // T label - branch to label if last s failed
+    delete_first, // D - delete first line of pattern space, restart cycle
+    print_first, // P - print first line of pattern space
 };
 
 /// Line address for sed commands
@@ -694,7 +696,8 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
         .next, .append_next, .quit, .line_number,
         .append_text, .insert_text, .change_text,
         .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
-        .label, .branch, .branch_not => {
+        .label, .branch, .branch_not,
+        .delete_first, .print_first => {
             // These commands require line-by-line processing and should not be called here
             return allocator.dupe(u8, text);
         },
@@ -781,7 +784,8 @@ fn needsLineByLine(commands: []const SedCommand) bool {
             .next, .append_next, .quit, .line_number,
             .append_text, .insert_text, .change_text,
             .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
-            .label, .branch, .branch_not => return true,
+            .label, .branch, .branch_not,
+            .delete_first, .print_first => return true,
             else => {},
         }
     }
@@ -838,25 +842,30 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
         var change_text: ?[]const u8 = null;
         var last_substitute_succeeded = false;
 
-        // Apply each command to the pattern space
-        var cmd_idx: usize = 0;
-        while (cmd_idx < commands.len) {
-            const cmd = commands[cmd_idx];
-            if (skip_to_next or quit_requested) break;
+        // D command can restart the command cycle without reading a new line
+        var cycle_restart = true;
+        while (cycle_restart) {
+            cycle_restart = false;
 
-            // Check if address matches
-            const total_lines = countLines(text); // Approximate
-            const address_matches = if (cmd.address) |addr| addr.matches(line_num, total_lines) else true;
-            if (!address_matches) {
-                cmd_idx += 1;
-                continue;
-            }
+            // Apply each command to the pattern space
+            var cmd_idx: usize = 0;
+            while (cmd_idx < commands.len) {
+                const cmd = commands[cmd_idx];
+                if (skip_to_next or quit_requested) break;
 
-            if (verbose) {
-                std.debug.print("Command [{d}]: {s}, Line: {d}\n", .{ cmd_idx, @tagName(cmd.cmd_type), line_num });
-            }
+                // Check if address matches
+                const total_lines = countLines(text); // Approximate
+                const address_matches = if (cmd.address) |addr| addr.matches(line_num, total_lines) else true;
+                if (!address_matches) {
+                    cmd_idx += 1;
+                    continue;
+                }
 
-            switch (cmd.cmd_type) {
+                if (verbose) {
+                    std.debug.print("Command [{d}]: {s}, Line: {d}\n", .{ cmd_idx, @tagName(cmd.cmd_type), line_num });
+                }
+
+                switch (cmd.cmd_type) {
                 .label => {
                     // No-op: label definition
                 },
@@ -983,8 +992,16 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                         line_end = next_end;
                         has_delim = line_end < text.len;
                         manual_advance = true;
+                        should_print = !suppress_output;
+                    } else {
+                        // No next line: print pattern space and exit (GNU sed behavior)
+                        try out_writer.writeAll(pattern_space.items);
+                        if (pattern_space.items.len > 0 and pattern_space.items[pattern_space.items.len - 1] != line_delim) {
+                            try out_writer.writeAll(&[_]u8{line_delim});
+                        }
+                        should_print = false;
+                        quit_requested = true;
                     }
-                    should_print = !suppress_output;
                 },
                 .append_next => {
                     // Append next line to pattern space
@@ -995,6 +1012,14 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                         try pattern_space.appendSlice(allocator, text[line_end + 1 .. next_end]);
                         line_end = next_end;
                         has_delim = line_end < text.len;
+                    } else {
+                        // No next line: print pattern space and exit (GNU sed behavior)
+                        try out_writer.writeAll(pattern_space.items);
+                        if (pattern_space.items.len > 0 and pattern_space.items[pattern_space.items.len - 1] != line_delim) {
+                            try out_writer.writeAll(&[_]u8{line_delim});
+                        }
+                        should_print = false;
+                        quit_requested = true;
                     }
                 },
                 .quit => {
@@ -1050,9 +1075,35 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                     hold_space.clearRetainingCapacity();
                     try hold_space.appendSlice(allocator, tmp);
                 },
+                .delete_first => {
+                    if (std.mem.indexOfScalar(u8, pattern_space.items, line_delim)) |newline_idx| {
+                        // Remove up to and including the first newline
+                        const remaining_text = pattern_space.items[newline_idx + 1 ..];
+                        pattern_space.clearRetainingCapacity();
+                        try pattern_space.appendSlice(allocator, remaining_text);
+                        cycle_restart = true;
+                        should_print = !suppress_output;
+                        skip_to_next = false;
+                        cmd_idx = commands.len; // break inner loop
+                    } else {
+                        // No newline: act like d
+                        pattern_space.clearRetainingCapacity();
+                        should_print = false;
+                        skip_to_next = true;
+                    }
+                },
+                .print_first => {
+                    if (std.mem.indexOfScalar(u8, pattern_space.items, line_delim)) |newline_idx| {
+                        try out_writer.writeAll(pattern_space.items[0..newline_idx]);
+                    } else {
+                        try out_writer.writeAll(pattern_space.items);
+                    }
+                    try out_writer.writeAll(&[_]u8{line_delim});
+                },
             }
             cmd_idx += 1;
         }
+        } // end cycle_restart loop
 
         // Output insert texts before the line
         for (insert_texts.items) |txt| {
@@ -1407,6 +1458,28 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
         return SedCommand{
             .cmd_type = .print,
             .pattern = "", // No pattern - use address only
+            .replacement = "",
+            .options = .{},
+            .address = address,
+        };
+    }
+
+    // Check for 'D' (delete first line of pattern space, restart cycle)
+    if (remaining[0] == 'D') {
+        return SedCommand{
+            .cmd_type = .delete_first,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+        };
+    }
+
+    // Check for 'P' (print first line of pattern space)
+    if (remaining[0] == 'P') {
+        return SedCommand{
+            .cmd_type = .print_first,
+            .pattern = "",
             .replacement = "",
             .options = .{},
             .address = address,
