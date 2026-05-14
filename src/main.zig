@@ -69,6 +69,8 @@ const CommandType = enum {
     print_first, // P - print first line of pattern space
     comment, // # comment - ignored
     list_unambiguously, // l - list pattern space unambiguously
+    execute_cmd, // e - execute pattern space as command, replace with output
+    version, // v - print version
 };
 
 /// Line address for sed commands
@@ -723,7 +725,8 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
         .append_text, .insert_text, .change_text,
         .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
         .label, .branch, .branch_not, .branch_unconditional,
-        .delete_first, .print_first, .comment, .list_unambiguously => {
+        .delete_first, .print_first, .comment, .list_unambiguously,
+        .execute_cmd, .version => {
             // These commands require line-by-line processing and should not be called here
             return allocator.dupe(u8, text);
         },
@@ -843,7 +846,7 @@ fn needsLineByLine(commands: []const SedCommand) bool {
             .append_text, .insert_text, .change_text,
             .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
             .label, .branch, .branch_not, .branch_unconditional,
-            .delete_first, .print_first, .list_unambiguously => return true,
+            .delete_first, .print_first, .list_unambiguously, .execute_cmd => return true,
             .substitute => if (cmd.options.execute or cmd.options.w_file != null) return true,
             else => {},
         }
@@ -1220,6 +1223,19 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                         try out_writer.writeAll(pattern_space.items);
                     }
                     try out_writer.writeAll(&[_]u8{line_delim});
+                },
+                .execute_cmd => {
+                    const cmd_output = try executeShellCommand(allocator, pattern_space.items);
+                    defer allocator.free(cmd_output);
+                    pattern_space.clearRetainingCapacity();
+                    try pattern_space.appendSlice(allocator, cmd_output);
+                    // Remove trailing newline if present (GNU sed behavior)
+                    if (pattern_space.items.len > 0 and pattern_space.items[pattern_space.items.len - 1] == '\n') {
+                        pattern_space.items.len -= 1;
+                    }
+                },
+                .version => {
+                    try out_writer.writeAll("e-jerk sed 0.2.0\n");
                 },
             }
             cmd_idx += 1;
@@ -1741,6 +1757,30 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
     if (remaining[0] == '=') {
         return SedCommand{
             .cmd_type = .line_number,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+            .negate_address = negate_address,
+        };
+    }
+
+    // Check for 'e' (execute pattern space)
+    if (remaining[0] == 'e') {
+        return SedCommand{
+            .cmd_type = .execute_cmd,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+            .negate_address = negate_address,
+        };
+    }
+
+    // Check for 'v' (version)
+    if (remaining[0] == 'v') {
+        return SedCommand{
+            .cmd_type = .version,
             .pattern = "",
             .replacement = "",
             .options = .{},
