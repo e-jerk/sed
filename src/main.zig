@@ -64,6 +64,7 @@ const CommandType = enum {
     label, // :label - define a branch target
     branch, // t label - branch to label if last s succeeded
     branch_not, // T label - branch to label if last s failed
+    branch_unconditional, // b label - branch to label unconditionally
     delete_first, // D - delete first line of pattern space, restart cycle
     print_first, // P - print first line of pattern space
 };
@@ -700,7 +701,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
         .next, .append_next, .quit, .line_number,
         .append_text, .insert_text, .change_text,
         .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
-        .label, .branch, .branch_not,
+        .label, .branch, .branch_not, .branch_unconditional,
         .delete_first, .print_first => {
             // These commands require line-by-line processing and should not be called here
             return allocator.dupe(u8, text);
@@ -781,6 +782,35 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
     }
 }
 
+/// Execute text as a shell command and return stdout output
+fn executeShellCommand(allocator: std.mem.Allocator, command_text: []const u8) ![]u8 {
+    var child = std.process.Child.init(&.{ "/bin/sh", "-c", command_text }, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+
+    var output: std.ArrayListUnmanaged(u8) = .{};
+    errdefer output.deinit(allocator);
+
+    if (child.stdout) |stdout| {
+        var buf: [4096]u8 = undefined;
+        while (true) {
+            const bytes_read = stdout.read(&buf) catch break;
+            if (bytes_read == 0) break;
+            try output.appendSlice(allocator, buf[0..bytes_read]);
+        }
+    }
+
+    _ = child.wait() catch {};
+
+    // Trim trailing newline if present (GNU sed behavior)
+    if (output.items.len > 0 and output.items[output.items.len - 1] == '\n') {
+        output.items.len -= 1;
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
 /// Check if commands require line-by-line processing
 fn needsLineByLine(commands: []const SedCommand) bool {
     for (commands) |cmd| {
@@ -788,8 +818,9 @@ fn needsLineByLine(commands: []const SedCommand) bool {
             .next, .append_next, .quit, .line_number, .print,
             .append_text, .insert_text, .change_text,
             .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
-            .label, .branch, .branch_not,
+            .label, .branch, .branch_not, .branch_unconditional,
             .delete_first, .print_first => return true,
+            .substitute => if (cmd.options.execute) return true,
             else => {},
         }
     }
@@ -906,6 +937,18 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                     }
                     last_substitute_succeeded = false;
                 },
+                .branch_unconditional => {
+                    // b label: branch unconditionally
+                    if (cmd.label.len > 0) {
+                        if (label_map.get(cmd.label)) |target_idx| {
+                            cmd_idx = target_idx;
+                            continue;
+                        }
+                    } else {
+                        // b with no label = jump to end of script
+                        break;
+                    }
+                },
                 .substitute => {
                     const search_pattern = if (std.mem.indexOfScalar(u8, cmd.pattern, '\\') != null)
                         try unescapePattern(allocator, cmd.pattern)
@@ -927,6 +970,13 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                     pattern_space.deinit(allocator);
                     pattern_space = new_space;
                     last_substitute_succeeded = result.matches.len > 0;
+                    // s///e: execute pattern space as shell command, replace with output
+                    if (cmd.options.execute and result.matches.len > 0) {
+                        const cmd_output = try executeShellCommand(allocator, pattern_space.items);
+                        defer allocator.free(cmd_output);
+                        pattern_space.clearRetainingCapacity();
+                        try pattern_space.appendSlice(allocator, cmd_output);
+                    }
                 },
                 .delete => {
                     pattern_space.clearRetainingCapacity();
@@ -1440,6 +1490,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
                     'g' => options.global = true,
                     'i', 'I' => options.case_insensitive = true,
                     '1' => options.first_only = true,
+                    'e' => options.execute = true,
                     else => {},
                 }
             }
@@ -1700,6 +1751,20 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
         const label_name = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " \t") else "";
         return SedCommand{
             .cmd_type = .branch_not,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+            .label = label_name,
+            .negate_address = negate_address,
+        };
+    }
+
+    // Check for 'b' (branch to label unconditionally)
+    if (remaining[0] == 'b') {
+        const label_name = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " \t") else "";
+        return SedCommand{
+            .cmd_type = .branch_unconditional,
             .pattern = "",
             .replacement = "",
             .options = .{},
