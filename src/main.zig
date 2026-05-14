@@ -86,6 +86,9 @@ const Address = struct {
     }
 };
 
+/// Global quit code for sed 'q N' command
+var g_sed_quit_code: u8 = 0;
+
 /// Parsed sed command
 const SedCommand = struct {
     cmd_type: CommandType,
@@ -97,6 +100,7 @@ const SedCommand = struct {
     file_path: []const u8 = "", // For r/w commands
     text: []const u8 = "", // For a/i/c commands
     label: []const u8 = "", // For :/t/T commands
+    exit_code: u8 = 0, // For q command
 };
 
 /// Process replacement string, expanding special sequences like & (matched text)
@@ -750,6 +754,9 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
         if (!suppress_output) {
             _ = std.posix.write(std.posix.STDOUT_FILENO, output_buffer.items) catch {};
         }
+        if (g_sed_quit_code != 0) {
+            std.process.exit(g_sed_quit_code);
+        }
         return;
     }
 
@@ -1078,6 +1085,7 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                     }
                 },
                 .quit => {
+                    g_sed_quit_code = cmd.exit_code;
                     quit_requested = true;
                 },
                 .line_number => {
@@ -1241,6 +1249,9 @@ fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands
             try out_file.writeAll(output_buffer.items);
         } else if (!suppress_output) {
             _ = std.posix.write(std.posix.STDOUT_FILENO, output_buffer.items) catch {};
+        }
+        if (g_sed_quit_code != 0) {
+            std.process.exit(g_sed_quit_code);
         }
         return;
     }
@@ -1451,6 +1462,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
                 .replacement = parts[1],
                 .options = .{},
                 .address = address,
+                .negate_address = negate_address,
             };
         }
     }
@@ -1608,6 +1620,19 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
 
     // Check for 'q' (quit)
     if (remaining[0] == 'q') {
+        var exit_code: u8 = 0;
+        if (remaining.len > 1) {
+            // Parse optional exit code: q N (skip leading whitespace)
+            var start: usize = 1;
+            while (start < remaining.len and std.ascii.isWhitespace(remaining[start])) : (start += 1) {}
+            if (start < remaining.len) {
+                var end: usize = start;
+                while (end < remaining.len and std.ascii.isDigit(remaining[end])) : (end += 1) {}
+                if (end > start) {
+                    exit_code = std.fmt.parseInt(u8, remaining[start..end], 10) catch 0;
+                }
+            }
+        }
         return SedCommand{
             .cmd_type = .quit,
             .pattern = "",
@@ -1615,6 +1640,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .options = .{},
             .address = address,
             .negate_address = negate_address,
+            .exit_code = exit_code,
         };
     }
 
