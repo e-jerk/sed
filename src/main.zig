@@ -67,6 +67,8 @@ const CommandType = enum {
     branch_unconditional, // b label - branch to label unconditionally
     delete_first, // D - delete first line of pattern space, restart cycle
     print_first, // P - print first line of pattern space
+    comment, // # comment - ignored
+    list_unambiguously, // l - list pattern space unambiguously
 };
 
 /// Line address for sed commands
@@ -721,7 +723,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
         .append_text, .insert_text, .change_text,
         .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
         .label, .branch, .branch_not, .branch_unconditional,
-        .delete_first, .print_first => {
+        .delete_first, .print_first, .comment, .list_unambiguously => {
             // These commands require line-by-line processing and should not be called here
             return allocator.dupe(u8, text);
         },
@@ -841,7 +843,7 @@ fn needsLineByLine(commands: []const SedCommand) bool {
             .append_text, .insert_text, .change_text,
             .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
             .label, .branch, .branch_not, .branch_unconditional,
-            .delete_first, .print_first => return true,
+            .delete_first, .print_first, .list_unambiguously => return true,
             .substitute => if (cmd.options.execute or cmd.options.w_file != null) return true,
             else => {},
         }
@@ -1031,6 +1033,32 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                 .print => {
                     try out_writer.writeAll(pattern_space.items);
                     if (has_delim) try out_writer.writeAll(&[_]u8{line_delim});
+                },
+                .list_unambiguously => {
+                    // List pattern space unambiguously: show special chars as escapes
+                    for (pattern_space.items) |c| {
+                        switch (c) {
+                            '\\' => try out_writer.writeAll("\\\\"),
+                            '\n' => try out_writer.writeAll("\\n"),
+                            '\t' => try out_writer.writeAll("\\t"),
+                            '\r' => try out_writer.writeAll("\\r"),
+                            '\x0c' => try out_writer.writeAll("\\f"),
+                            '\x07' => try out_writer.writeAll("\\a"),
+                            else => {
+                                if (c < 32 or c > 126) {
+                                    var buf: [8]u8 = undefined;
+                                    const esc = std.fmt.bufPrint(&buf, "\\{o:0>3}", .{c}) catch "\\?";
+                                    try out_writer.writeAll(esc);
+                                } else {
+                                    try out_writer.writeAll(&[_]u8{c});
+                                }
+                            },
+                        }
+                    }
+                    try out_writer.writeAll("$\\n");
+                },
+                .comment => {
+                    // Comments are ignored during execution
                 },
                 .transliterate => {
                     for (pattern_space.items) |*c| {
@@ -1401,6 +1429,17 @@ fn processTransliterateStdin(allocator: std.mem.Allocator, text: []const u8, cmd
 fn parseSedExpression(expr: []const u8) !SedCommand {
     if (expr.len < 1) return error.InvalidExpression;
 
+    // Check for comment (#) — no address allowed
+    if (expr[0] == '#') {
+        return SedCommand{
+            .cmd_type = .comment,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .label = "",
+        };
+    }
+
     // Check for label definition (:label) — no address allowed
     if (expr[0] == ':') {
         const label_name = std.mem.trimLeft(u8, expr[1..], " \t");
@@ -1576,6 +1615,18 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
         return SedCommand{
             .cmd_type = .print,
             .pattern = "", // No pattern - use address only
+            .replacement = "",
+            .options = .{},
+            .address = address,
+            .negate_address = negate_address,
+        };
+    }
+
+    // Check for 'l' (list pattern space unambiguously)
+    if (remaining[0] == 'l') {
+        return SedCommand{
+            .cmd_type = .list_unambiguously,
+            .pattern = "",
             .replacement = "",
             .options = .{},
             .address = address,
