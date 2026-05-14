@@ -842,7 +842,7 @@ fn needsLineByLine(commands: []const SedCommand) bool {
             .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
             .label, .branch, .branch_not, .branch_unconditional,
             .delete_first, .print_first => return true,
-            .substitute => if (cmd.options.execute) return true,
+            .substitute => if (cmd.options.execute or cmd.options.w_file != null) return true,
             else => {},
         }
     }
@@ -999,6 +999,20 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                         defer allocator.free(cmd_output);
                         pattern_space.clearRetainingCapacity();
                         try pattern_space.appendSlice(allocator, cmd_output);
+                    }
+                    // s///w file: write changed line to file
+                    if (cmd.options.w_file) |w_filepath| {
+                        if (result.matches.len > 0) {
+                            const w_file = blk: {
+                                break :blk std.fs.cwd().openFile(w_filepath, .{ .mode = .read_write }) catch {
+                                    break :blk std.fs.cwd().createFile(w_filepath, .{}) catch continue;
+                                };
+                            };
+                            w_file.seekFromEnd(0) catch {};
+                            _ = w_file.write(pattern_space.items) catch {};
+                            _ = w_file.write("\n") catch {};
+                            w_file.close();
+                        }
                     }
                 },
                 .delete => {
@@ -1513,12 +1527,23 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
         var options = SubstituteOptions{};
         if (replacement_end + 1 < remaining.len) {
             const flags = remaining[replacement_end + 1 ..];
-            for (flags) |f| {
+            var fi: usize = 0;
+            while (fi < flags.len) : (fi += 1) {
+                const f = flags[fi];
                 switch (f) {
                     'g' => options.global = true,
                     'i', 'I' => options.case_insensitive = true,
                     '1' => options.first_only = true,
                     'e' => options.execute = true,
+                    'w' => {
+                        // Rest of flags string is the filename (trim leading whitespace)
+                        if (fi + 1 < flags.len) {
+                            var start = fi + 1;
+                            while (start < flags.len and flags[start] == ' ') start += 1;
+                            options.w_file = flags[start..];
+                        }
+                        break;
+                    },
                     else => {},
                 }
             }
