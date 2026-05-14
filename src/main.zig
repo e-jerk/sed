@@ -92,6 +92,7 @@ const SedCommand = struct {
     replacement: []const u8,
     options: SubstituteOptions,
     address: ?Address = null, // Optional line address
+    negate_address: bool = false, // ! after address
     file_path: []const u8 = "", // For r/w commands
     text: []const u8 = "", // For a/i/c commands
     label: []const u8 = "", // For :/t/T commands
@@ -424,7 +425,8 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
                         const line_end = i;
                         const line = text[line_start..line_end];
 
-                        if (addr.matches(line_num, total_lines)) {
+                        const effective_match = if (cmd.negate_address) !addr.matches(line_num, total_lines) else addr.matches(line_num, total_lines);
+                        if (effective_match) {
                             // Apply substitution to this line
                             var line_result = try doFindMatches(line, cmd.pattern, cmd.options, allocator);
                             defer line_result.deinit();
@@ -515,7 +517,8 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
 
                     while (i < text.len) : (i += 1) {
                         if (text[i] == '\n') {
-                            if (!addr.matches(line_num, total_lines)) {
+                            const effective_match = if (cmd.negate_address) !addr.matches(line_num, total_lines) else addr.matches(line_num, total_lines);
+                            if (!effective_match) {
                                 try output.appendSlice(allocator, text[line_start .. i + 1]);
                             }
                             line_start = i + 1;
@@ -523,7 +526,8 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
                         }
                     }
                     // Handle last line without newline
-                    if (line_start < text.len and !addr.matches(line_num, total_lines)) {
+                    const effective_match = if (cmd.negate_address) !addr.matches(line_num, total_lines) else addr.matches(line_num, total_lines);
+                    if (line_start < text.len and !effective_match) {
                         try output.appendSlice(allocator, text[line_start..]);
                     }
 
@@ -781,7 +785,7 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
 fn needsLineByLine(commands: []const SedCommand) bool {
     for (commands) |cmd| {
         switch (cmd.cmd_type) {
-            .next, .append_next, .quit, .line_number,
+            .next, .append_next, .quit, .line_number, .print,
             .append_text, .insert_text, .change_text,
             .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
             .label, .branch, .branch_not,
@@ -853,10 +857,11 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                 const cmd = commands[cmd_idx];
                 if (skip_to_next or quit_requested) break;
 
-                // Check if address matches
+                // Check if address matches (with ! negation)
                 const total_lines = countLines(text); // Approximate
                 const address_matches = if (cmd.address) |addr| addr.matches(line_num, total_lines) else true;
-                if (!address_matches) {
+                const effective_match = if (cmd.negate_address) !address_matches else address_matches;
+                if (!effective_match) {
                     cmd_idx += 1;
                     continue;
                 }
@@ -1363,6 +1368,13 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
         }
     }
 
+    // Check for ! address negation
+    var negate_address = false;
+    if (cmd_start < expr.len and expr[cmd_start] == '!') {
+        negate_address = true;
+        cmd_start += 1;
+    }
+
     // Get the remaining expression after the address
     const remaining = expr[cmd_start..];
     if (remaining.len < 1) return error.InvalidExpression;
@@ -1439,6 +1451,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = replacement,
             .options = options,
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1450,6 +1463,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1461,6 +1475,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1472,6 +1487,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1483,6 +1499,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1496,6 +1513,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .options = .{},
             .address = address,
             .file_path = file_path,
+            .negate_address = negate_address,
         };
     }
 
@@ -1509,6 +1527,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .options = .{},
             .address = address,
             .file_path = file_path,
+            .negate_address = negate_address,
         };
     }
 
@@ -1520,6 +1539,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1531,6 +1551,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1542,6 +1563,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1553,6 +1575,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1566,6 +1589,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .options = .{},
             .address = address,
             .text = text,
+            .negate_address = negate_address,
         };
     }
 
@@ -1579,6 +1603,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .options = .{},
             .address = address,
             .text = text,
+            .negate_address = negate_address,
         };
     }
 
@@ -1592,6 +1617,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .options = .{},
             .address = address,
             .text = text,
+            .negate_address = negate_address,
         };
     }
 
@@ -1603,6 +1629,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1614,6 +1641,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1625,6 +1653,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1636,6 +1665,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1647,6 +1677,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
@@ -1660,6 +1691,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .options = .{},
             .address = address,
             .label = label_name,
+            .negate_address = negate_address,
         };
     }
 
@@ -1673,6 +1705,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .options = .{},
             .address = address,
             .label = label_name,
+            .negate_address = negate_address,
         };
     }
 
@@ -1724,6 +1757,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = options,
             .address = address,
+            .negate_address = negate_address,
         };
     }
 
