@@ -50,6 +50,19 @@ pub const MatchResult = extern struct {
     _pad: u32 = 0,
 };
 
+// Capture group info for a single match (start/end pairs for \1-\9)
+pub const CaptureGroups = struct {
+    groups: [9][2]u32, // [group_idx][0=start, 1=end]
+    count: u8, // number of capture groups (0-9)
+
+    pub fn get(self: CaptureGroups, idx: usize) ?[]const u8 {
+        if (idx == 0 or idx > self.count) return null;
+        const g = self.groups[idx - 1];
+        if (g[0] == 0 and g[1] == 0) return null;
+        return ""; // caller provides actual text slice
+    }
+};
+
 // Substitute flags
 pub const SubstituteFlags = struct {
     pub const CASE_INSENSITIVE: u32 = 1;
@@ -66,6 +79,9 @@ pub const SubstituteOptions = struct {
     line_mode: bool = false,
     anchor_start: bool = false, // ^ pattern anchor
     extended: bool = false, // ERE mode (-E/-r), when false uses BRE
+    execute: bool = false, // s///e: execute replacement as command
+    w_file: ?[]const u8 = null, // s///w file: write changed line to file
+    multiline: bool = false, // s///m: multiline mode (enable ^/$ per line)
 
     pub fn toFlags(self: SubstituteOptions) u32 {
         var flags: u32 = 0;
@@ -82,9 +98,11 @@ pub const SubstituteResult = struct {
     matches: []MatchResult,
     total_matches: u64,
     allocator: std.mem.Allocator,
+    captures: ?[]CaptureGroups = null, // Optional: one CaptureGroups per match (CPU regex only)
 
     pub fn deinit(self: *SubstituteResult) void {
         self.allocator.free(self.matches);
+        if (self.captures) |caps| self.allocator.free(caps);
     }
 };
 
