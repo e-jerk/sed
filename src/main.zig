@@ -61,6 +61,9 @@ const CommandType = enum {
     append_hold, // H - append pattern space to hold space
     get_append_hold, // G - append hold space to pattern space
     exchange, // x - exchange pattern space and hold space
+    label, // :label - define a branch target
+    branch, // t label - branch to label if last s succeeded
+    branch_not, // T label - branch to label if last s failed
 };
 
 /// Line address for sed commands
@@ -89,6 +92,7 @@ const SedCommand = struct {
     address: ?Address = null, // Optional line address
     file_path: []const u8 = "", // For r/w commands
     text: []const u8 = "", // For a/i/c commands
+    label: []const u8 = "", // For :/t/T commands
 };
 
 /// Process replacement string, expanding special sequences like & (matched text)
@@ -689,7 +693,8 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
         },
         .next, .append_next, .quit, .line_number,
         .append_text, .insert_text, .change_text,
-        .hold, .get_hold, .append_hold, .get_append_hold, .exchange => {
+        .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
+        .label, .branch, .branch_not => {
             // These commands require line-by-line processing and should not be called here
             return allocator.dupe(u8, text);
         },
@@ -775,7 +780,8 @@ fn needsLineByLine(commands: []const SedCommand) bool {
         switch (cmd.cmd_type) {
             .next, .append_next, .quit, .line_number,
             .append_text, .insert_text, .change_text,
-            .hold, .get_hold, .append_hold, .get_append_hold, .exchange => return true,
+            .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
+            .label, .branch, .branch_not => return true,
             else => {},
         }
     }
@@ -793,6 +799,20 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
     // Hold space persists across lines
     var hold_space: std.ArrayListUnmanaged(u8) = .{};
     defer hold_space.deinit(allocator);
+
+    // Build label map for branch commands
+    var label_map: std.StringHashMapUnmanaged(usize) = .{};
+    defer {
+        var it = label_map.iterator();
+        while (it.next()) |entry| allocator.free(entry.key_ptr.*);
+        label_map.deinit(allocator);
+    }
+    for (commands, 0..) |cmd, idx| {
+        if (cmd.cmd_type == .label and cmd.label.len > 0) {
+            const key = try allocator.dupe(u8, cmd.label);
+            try label_map.put(allocator, key, idx);
+        }
+    }
 
     while (pos < text.len and !quit_requested) {
         // Find end of current line
@@ -816,21 +836,62 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
         var append_texts: std.ArrayListUnmanaged([]const u8) = .{};
         defer append_texts.deinit(allocator);
         var change_text: ?[]const u8 = null;
+        var last_substitute_succeeded = false;
 
         // Apply each command to the pattern space
-        for (commands, 0..) |cmd, idx| {
+        var cmd_idx: usize = 0;
+        while (cmd_idx < commands.len) {
+            const cmd = commands[cmd_idx];
             if (skip_to_next or quit_requested) break;
 
             // Check if address matches
             const total_lines = countLines(text); // Approximate
             const address_matches = if (cmd.address) |addr| addr.matches(line_num, total_lines) else true;
-            if (!address_matches) continue;
+            if (!address_matches) {
+                cmd_idx += 1;
+                continue;
+            }
 
             if (verbose) {
-                std.debug.print("Command [{d}]: {s}, Line: {d}\n", .{ idx, @tagName(cmd.cmd_type), line_num });
+                std.debug.print("Command [{d}]: {s}, Line: {d}\n", .{ cmd_idx, @tagName(cmd.cmd_type), line_num });
             }
 
             switch (cmd.cmd_type) {
+                .label => {
+                    // No-op: label definition
+                },
+                .branch => {
+                    // t label: branch if last substitute succeeded
+                    if (last_substitute_succeeded) {
+                        if (cmd.label.len > 0) {
+                            if (label_map.get(cmd.label)) |target_idx| {
+                                cmd_idx = target_idx;
+                                last_substitute_succeeded = false;
+                                continue;
+                            }
+                        } else {
+                            // t with no label = jump to end of script
+                            break;
+                        }
+                    }
+                    last_substitute_succeeded = false;
+                },
+                .branch_not => {
+                    // T label: branch if last substitute failed
+                    if (!last_substitute_succeeded) {
+                        if (cmd.label.len > 0) {
+                            if (label_map.get(cmd.label)) |target_idx| {
+                                cmd_idx = target_idx;
+                                last_substitute_succeeded = false;
+                                continue;
+                            }
+                        } else {
+                            // T with no label = jump to end of script
+                            break;
+                        }
+                    }
+                    last_substitute_succeeded = false;
+                },
                 .substitute => {
                     const search_pattern = if (std.mem.indexOfScalar(u8, cmd.pattern, '\\') != null)
                         try unescapePattern(allocator, cmd.pattern)
@@ -851,6 +912,7 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                     try new_space.appendSlice(allocator, pattern_space.items[last_p..]);
                     pattern_space.deinit(allocator);
                     pattern_space = new_space;
+                    last_substitute_succeeded = result.matches.len > 0;
                 },
                 .delete => {
                     pattern_space.clearRetainingCapacity();
@@ -989,6 +1051,7 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                     try hold_space.appendSlice(allocator, tmp);
                 },
             }
+            cmd_idx += 1;
         }
 
         // Output insert texts before the line
@@ -1190,6 +1253,18 @@ fn processTransliterateStdin(allocator: std.mem.Allocator, text: []const u8, cmd
 
 fn parseSedExpression(expr: []const u8) !SedCommand {
     if (expr.len < 1) return error.InvalidExpression;
+
+    // Check for label definition (:label) — no address allowed
+    if (expr[0] == ':') {
+        const label_name = std.mem.trimLeft(u8, expr[1..], " \t");
+        return SedCommand{
+            .cmd_type = .label,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .label = label_name,
+        };
+    }
 
     // First, try to parse a line address (number, range, or $)
     var address: ?Address = null;
@@ -1499,6 +1574,32 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             .replacement = "",
             .options = .{},
             .address = address,
+        };
+    }
+
+    // Check for 't' (branch to label if last substitute succeeded)
+    if (remaining[0] == 't') {
+        const label_name = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " \t") else "";
+        return SedCommand{
+            .cmd_type = .branch,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+            .label = label_name,
+        };
+    }
+
+    // Check for 'T' (branch to label if last substitute failed)
+    if (remaining[0] == 'T') {
+        const label_name = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " \t") else "";
+        return SedCommand{
+            .cmd_type = .branch_not,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+            .label = label_name,
         };
     }
 
