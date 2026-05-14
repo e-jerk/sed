@@ -53,6 +53,14 @@ const CommandType = enum {
     append_next, // N - append next line to pattern space
     quit, // q - quit immediately
     line_number, // = - print current line number
+    append_text, // a\ text - append text after line
+    insert_text, // i\ text - insert text before line
+    change_text, // c\ text - replace line with text
+    hold, // h - copy pattern space to hold space
+    get_hold, // g - copy hold space to pattern space
+    append_hold, // H - append pattern space to hold space
+    get_append_hold, // G - append hold space to pattern space
+    exchange, // x - exchange pattern space and hold space
 };
 
 /// Line address for sed commands
@@ -80,6 +88,7 @@ const SedCommand = struct {
     options: SubstituteOptions,
     address: ?Address = null, // Optional line address
     file_path: []const u8 = "", // For r/w commands
+    text: []const u8 = "", // For a/i/c commands
 };
 
 /// Process replacement string, expanding special sequences like & (matched text)
@@ -678,7 +687,9 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
 
             return allocator.dupe(u8, text);
         },
-        .next, .append_next, .quit, .line_number => {
+        .next, .append_next, .quit, .line_number,
+        .append_text, .insert_text, .change_text,
+        .hold, .get_hold, .append_hold, .get_append_hold, .exchange => {
             // These commands require line-by-line processing and should not be called here
             return allocator.dupe(u8, text);
         },
@@ -762,7 +773,9 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
 fn needsLineByLine(commands: []const SedCommand) bool {
     for (commands) |cmd| {
         switch (cmd.cmd_type) {
-            .next, .append_next, .quit, .line_number => return true,
+            .next, .append_next, .quit, .line_number,
+            .append_text, .insert_text, .change_text,
+            .hold, .get_hold, .append_hold, .get_append_hold, .exchange => return true,
             else => {},
         }
     }
@@ -776,6 +789,10 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
     var line_num: u32 = 1;
     var pos: usize = 0;
     var quit_requested = false;
+
+    // Hold space persists across lines
+    var hold_space: std.ArrayListUnmanaged(u8) = .{};
+    defer hold_space.deinit(allocator);
 
     while (pos < text.len and !quit_requested) {
         // Find end of current line
@@ -794,6 +811,11 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
         var should_print = !suppress_output;
         var skip_to_next = false;
         var manual_advance = false; // Set by n/N to prevent double-advance
+        var insert_texts: std.ArrayListUnmanaged([]const u8) = .{};
+        defer insert_texts.deinit(allocator);
+        var append_texts: std.ArrayListUnmanaged([]const u8) = .{};
+        defer append_texts.deinit(allocator);
+        var change_text: ?[]const u8 = null;
 
         // Apply each command to the pattern space
         for (commands, 0..) |cmd, idx| {
@@ -922,13 +944,75 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                     try out_writer.writeAll(num_str);
                     try out_writer.writeAll(&[_]u8{line_delim});
                 },
+                .append_text => {
+                    if (cmd.text.len > 0) {
+                        try append_texts.append(allocator, cmd.text);
+                    }
+                },
+                .insert_text => {
+                    if (cmd.text.len > 0) {
+                        try insert_texts.append(allocator, cmd.text);
+                    }
+                },
+                .change_text => {
+                    if (cmd.text.len > 0) {
+                        change_text = cmd.text;
+                    }
+                    pattern_space.clearRetainingCapacity();
+                    should_print = false;
+                    skip_to_next = true;
+                },
+                .hold => {
+                    hold_space.clearRetainingCapacity();
+                    try hold_space.appendSlice(allocator, pattern_space.items);
+                },
+                .append_hold => {
+                    try hold_space.append(allocator, line_delim);
+                    try hold_space.appendSlice(allocator, pattern_space.items);
+                },
+                .get_hold => {
+                    pattern_space.clearRetainingCapacity();
+                    try pattern_space.appendSlice(allocator, hold_space.items);
+                },
+                .get_append_hold => {
+                    if (hold_space.items.len > 0) {
+                        try pattern_space.append(allocator, line_delim);
+                        try pattern_space.appendSlice(allocator, hold_space.items);
+                    }
+                },
+                .exchange => {
+                    const tmp = try allocator.dupe(u8, pattern_space.items);
+                    defer allocator.free(tmp);
+                    pattern_space.clearRetainingCapacity();
+                    try pattern_space.appendSlice(allocator, hold_space.items);
+                    hold_space.clearRetainingCapacity();
+                    try hold_space.appendSlice(allocator, tmp);
+                },
             }
         }
 
+        // Output insert texts before the line
+        for (insert_texts.items) |txt| {
+            try out_writer.writeAll(txt);
+            try out_writer.writeAll(&[_]u8{line_delim});
+        }
+
         // Auto-print pattern space if not suppressed and not already printed
-        if (should_print and !skip_to_next and pattern_space.items.len > 0) {
+        if (should_print and !skip_to_next) {
             try out_writer.writeAll(pattern_space.items);
             if (has_delim) try out_writer.writeAll(&[_]u8{line_delim});
+        }
+
+        // Output change text (replaces the line)
+        if (change_text) |txt| {
+            try out_writer.writeAll(txt);
+            try out_writer.writeAll(&[_]u8{line_delim});
+        }
+
+        // Output append texts after the line
+        for (append_texts.items) |txt| {
+            try out_writer.writeAll(txt);
+            try out_writer.writeAll(&[_]u8{line_delim});
         }
 
         if (manual_advance) {
@@ -1317,6 +1401,100 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
     if (remaining[0] == '=') {
         return SedCommand{
             .cmd_type = .line_number,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+        };
+    }
+
+    // Check for 'a' (append text after line)
+    if (remaining[0] == 'a') {
+        const text = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " \\") else "";
+        return SedCommand{
+            .cmd_type = .append_text,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+            .text = text,
+        };
+    }
+
+    // Check for 'i' (insert text before line)
+    if (remaining[0] == 'i') {
+        const text = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " \\") else "";
+        return SedCommand{
+            .cmd_type = .insert_text,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+            .text = text,
+        };
+    }
+
+    // Check for 'c' (change line to text)
+    if (remaining[0] == 'c') {
+        const text = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " \\") else "";
+        return SedCommand{
+            .cmd_type = .change_text,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+            .text = text,
+        };
+    }
+
+    // Check for 'h' (copy pattern space to hold space)
+    if (remaining[0] == 'h') {
+        return SedCommand{
+            .cmd_type = .hold,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+        };
+    }
+
+    // Check for 'H' (append pattern space to hold space)
+    if (remaining[0] == 'H') {
+        return SedCommand{
+            .cmd_type = .append_hold,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+        };
+    }
+
+    // Check for 'g' (copy hold space to pattern space)
+    if (remaining[0] == 'g') {
+        return SedCommand{
+            .cmd_type = .get_hold,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+        };
+    }
+
+    // Check for 'G' (append hold space to pattern space)
+    if (remaining[0] == 'G') {
+        return SedCommand{
+            .cmd_type = .get_append_hold,
+            .pattern = "",
+            .replacement = "",
+            .options = .{},
+            .address = address,
+        };
+    }
+
+    // Check for 'x' (exchange pattern space and hold space)
+    if (remaining[0] == 'x') {
+        return SedCommand{
+            .cmd_type = .exchange,
             .pattern = "",
             .replacement = "",
             .options = .{},
