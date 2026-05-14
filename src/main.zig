@@ -1572,6 +1572,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
                 switch (f) {
                     'g' => options.global = true,
                     'i', 'I' => options.case_insensitive = true,
+                    'm', 'M' => options.multiline = true,
                     '1' => options.first_only = true,
                     'e' => options.execute = true,
                     'w' => {

@@ -81,6 +81,7 @@ pub const SubstituteOptions = struct {
     extended: bool = false, // ERE mode (-E/-r), when false uses BRE
     execute: bool = false, // s///e: execute replacement as command
     w_file: ?[]const u8 = null, // s///w file: write changed line to file
+    multiline: bool = false, // s///m: multiline mode (enable ^/$ per line)
 
     pub fn toFlags(self: SubstituteOptions) u32 {
         var flags: u32 = 0;
