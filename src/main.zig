@@ -103,8 +103,8 @@ const SedCommand = struct {
     exit_code: u8 = 0, // For q command
 };
 
-/// Process replacement string, expanding special sequences like & (matched text)
-fn processReplacement(replacement: []const u8, matched_text: []const u8, output: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !void {
+/// Process replacement string, expanding special sequences like & (matched text) and \1-\9 (capture groups)
+fn processReplacement(replacement: []const u8, matched_text: []const u8, output: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, full_text: []const u8, captures: ?gpu.CaptureGroups) !void {
     var i: usize = 0;
     while (i < replacement.len) {
         if (replacement[i] == '&') {
@@ -128,6 +128,18 @@ fn processReplacement(replacement: []const u8, matched_text: []const u8, output:
             } else if (next == 't') {
                 // \t is a tab
                 try output.append(allocator, '\t');
+                i += 2;
+            } else if (next >= '1' and next <= '9') {
+                // \1-\9 expands to capture group content
+                const group_idx = next - '0';
+                if (captures) |cg| {
+                    if (group_idx <= cg.count and group_idx > 0) {
+                        const g = cg.groups[group_idx - 1];
+                        if (g[0] != 0 or g[1] != 0) {
+                            try output.appendSlice(allocator, full_text[g[0]..g[1]]);
+                        }
+                    }
+                }
                 i += 2;
             } else {
                 // Other escapes pass through
@@ -440,7 +452,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
                             for (line_result.matches) |match| {
                                 try output.appendSlice(allocator, line[last_pos..match.start]);
                                 const matched_text = line[match.start..match.end];
-                                try processReplacement(cmd.replacement, matched_text, &output, allocator);
+                                try processReplacement(cmd.replacement, matched_text, &output, allocator, line, null);
                                 last_pos = match.end;
                             }
                             try output.appendSlice(allocator, line[last_pos..]);
@@ -500,13 +512,16 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
             errdefer output.deinit(allocator);
 
             var last_pos: usize = 0;
-            for (result.matches) |match| {
+            for (result.matches, 0..) |match, mi| {
                 try output.appendSlice(allocator, text[last_pos..match.start]);
+                // Append replacement with & and \1-\9 expansion
                 const matched_text = text[match.start..match.end];
-                try processReplacement(cmd.replacement, matched_text, &output, allocator);
+                const cg = if (result.captures) |caps| caps[mi] else null;
+                try processReplacement(cmd.replacement, matched_text, &output, allocator, text, cg);
                 last_pos = match.end;
             }
             try output.appendSlice(allocator, text[last_pos..]);
+
             return output.toOwnedSlice(allocator);
         },
         .delete => {
@@ -967,10 +982,11 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                     var new_space: std.ArrayListUnmanaged(u8) = .{};
                     errdefer new_space.deinit(allocator);
                     var last_p: usize = 0;
-                    for (result.matches) |match| {
+                    for (result.matches, 0..) |match, mi| {
                         try new_space.appendSlice(allocator, pattern_space.items[last_p..match.start]);
                         const matched_text = pattern_space.items[match.start..match.end];
-                        try processReplacement(cmd.replacement, matched_text, &new_space, allocator);
+                        const cg = if (result.captures) |caps| caps[mi] else null;
+                        try processReplacement(cmd.replacement, matched_text, &new_space, allocator, pattern_space.items, cg);
                         last_p = match.end;
                     }
                     try new_space.appendSlice(allocator, pattern_space.items[last_p..]);
@@ -1342,7 +1358,7 @@ fn processSubstituteStdin(allocator: std.mem.Allocator, text: []const u8, cmd: S
     for (result.matches) |match| {
         try output.appendSlice(allocator, text[last_pos..match.start]);
         const matched_text = text[match.start..match.end];
-        try processReplacement(cmd.replacement, matched_text, &output, allocator);
+        try processReplacement(cmd.replacement, matched_text, &output, allocator, text, null);
         last_pos = match.end;
     }
     try output.appendSlice(allocator, text[last_pos..]);
@@ -1959,7 +1975,7 @@ fn processSubstitute(allocator: std.mem.Allocator, text: []const u8, cmd: SedCom
         try output.appendSlice(allocator, text[last_pos..match.start]);
         // Append replacement with & expansion
         const matched_text = text[match.start..match.end];
-        try processReplacement(cmd.replacement, matched_text, &output, allocator);
+        try processReplacement(cmd.replacement, matched_text, &output, allocator, text, null);
         last_pos = match.end;
     }
     // Append remaining text
@@ -2235,7 +2251,7 @@ test "processReplacement: & expands to matched text" {
     var output: std.ArrayListUnmanaged(u8) = .{};
     defer output.deinit(std.testing.allocator);
 
-    try processReplacement("[&]", "hello", &output, std.testing.allocator);
+    try processReplacement("[&]", "hello", &output, std.testing.allocator, "hello", null);
     try std.testing.expectEqualStrings("[hello]", output.items);
 }
 
@@ -2243,7 +2259,7 @@ test "processReplacement: escaped ampersand" {
     var output: std.ArrayListUnmanaged(u8) = .{};
     defer output.deinit(std.testing.allocator);
 
-    try processReplacement("\\&", "hello", &output, std.testing.allocator);
+    try processReplacement("\\&", "hello", &output, std.testing.allocator, "hello", null);
     try std.testing.expectEqualStrings("&", output.items);
 }
 
@@ -2251,7 +2267,7 @@ test "processReplacement: escape sequences" {
     var output: std.ArrayListUnmanaged(u8) = .{};
     defer output.deinit(std.testing.allocator);
 
-    try processReplacement("a\\nb\\tc", "X", &output, std.testing.allocator);
+    try processReplacement("a\\nb\\tc", "X", &output, std.testing.allocator, "X", null);
     try std.testing.expectEqualStrings("a\nb\tc", output.items);
 }
 
@@ -2259,6 +2275,6 @@ test "processReplacement: mixed & and escapes" {
     var output: std.ArrayListUnmanaged(u8) = .{};
     defer output.deinit(std.testing.allocator);
 
-    try processReplacement("<&>\\n", "FOO", &output, std.testing.allocator);
+    try processReplacement("<&>\\n", "FOO", &output, std.testing.allocator, "FOO", null);
     try std.testing.expectEqualStrings("<FOO>\n", output.items);
 }

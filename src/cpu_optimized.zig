@@ -284,6 +284,8 @@ pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: Substitu
 
     var matches: std.ArrayListUnmanaged(MatchResult) = .{};
     defer matches.deinit(allocator);
+    var captures_list: std.ArrayListUnmanaged(gpu.CaptureGroups) = .{};
+    defer captures_list.deinit(allocator);
 
     var total_matches: u64 = 0;
     var line_num: u32 = 0;
@@ -339,6 +341,16 @@ pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: Substitu
                     .end = @intCast(m.end),
                     .line_num = line_num,
                 });
+                // Extract capture groups
+                var cg = gpu.CaptureGroups{ .groups = undefined, .count = 0 };
+                var gi: usize = 1;
+                while (gi <= 9 and gi < m.groups.len) : (gi += 1) {
+                    if (m.groups[gi]) |g| {
+                        cg.groups[gi - 1] = .{ @intCast(g.start), @intCast(g.end) };
+                        cg.count += 1;
+                    } else break;
+                }
+                try captures_list.append(allocator, cg);
                 total_matches += 1;
                 found_in_line = true;
 
@@ -359,7 +371,8 @@ pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: Substitu
     }
 
     const result = try matches.toOwnedSlice(allocator);
-    return SubstituteResult{ .matches = result, .total_matches = total_matches, .allocator = allocator };
+    const captures_result = if (captures_list.items.len > 0) try captures_list.toOwnedSlice(allocator) else null;
+    return SubstituteResult{ .matches = result, .total_matches = total_matches, .allocator = allocator, .captures = captures_result };
 }
 
 /// Convert BRE (Basic Regular Expression) pattern to ERE (Extended Regular Expression)
