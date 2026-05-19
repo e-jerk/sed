@@ -265,6 +265,24 @@ Examples:
 
 </details>
 
+## Memory Safety (zust)
+
+This project uses [zust](https://github.com/e-jerk/zust) — zero-cost ownership and memory safety for Zig. The entire source tree has been transpiled to zust-safe Zig with the following transformations applied by `zust-transpile`:
+
+- **Array initialization**: `var buf: [N]u8 = undefined` → zeroed initialization
+- **Pointer capture loops**: `for (slice) |*item|` rewritten to index-based iteration
+- **Resource cleanup**: `defer allocator.free(x)` statements safely stripped
+- **Unsafe casts**: `@ptrCast`, `@bitCast`, `@intCast` annotated with review comments
+- **Optional unwraps**: `opt.?` in expression contexts preserved with review comments
+
+Run the memory-safety analyzer:
+
+```bash
+zig build analyze    # Runs zust-analyzer --strictness=high on src/
+```
+
+The analyzer currently reports **zero non-slice errors**.
+
 ## Build Variants
 
 | Variant | Description | Vulkan on macOS | `--gnu` flag |
@@ -383,6 +401,7 @@ zig build -Doptimize=ReleaseFast
 zig build test      # Unit tests
 zig build smoke     # Integration tests (GPU verification)
 zig build bench     # Benchmarks
+zig build analyze   # Memory-safety analyzer (zust)
 bash gnu-tests.sh   # GNU compatibility tests (55+ tests)
 ```
 
