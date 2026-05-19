@@ -7,6 +7,8 @@ const cpu_gnu = @import("cpu_gnu");
 const SubstituteOptions = gpu.SubstituteOptions;
 
 /// Unescape sed pattern escape sequences (\n -> newline, \t -> tab, etc.)
+// safe-transpile: function uses raw slice parameter — consider safe.String
+// safe-transpile: function returns small constant slice — consider safe.String
 fn unescapePattern(allocator: std.mem.Allocator, pattern: []const u8) ![]u8 {
     var result: std.ArrayListUnmanaged(u8) = .{};
     errdefer result.deinit(allocator);
@@ -108,6 +110,7 @@ const SedCommand = struct {
 };
 
 /// Process replacement string, expanding special sequences like & (matched text) and \1-\9 (capture groups)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn processReplacement(replacement: []const u8, matched_text: []const u8, output: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, full_text: []const u8, captures: ?gpu.CaptureGroups) !void {
     var i: usize = 0;
     while (i < replacement.len) {
@@ -187,13 +190,13 @@ pub fn main() !void {
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--expression")) {
+        if (safe.SimdUtils.eql(arg, "-e") or safe.SimdUtils.eql(arg, "--expression")) {
             if (i + 1 < args.len) {
                 i += 1;
                 try expressions.append(allocator, args[i]);
                 saw_explicit_expr = true;
             }
-        } else if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--file")) {
+        } else if (safe.SimdUtils.eql(arg, "-f") or safe.SimdUtils.eql(arg, "--file")) {
             if (i + 1 < args.len) {
                 i += 1;
                 const file = std.fs.cwd().openFile(args[i], .{}) catch |err| {
@@ -205,7 +208,7 @@ pub fn main() !void {
                     std.debug.print("sed: {s}: {}\n", .{ args[i], err });
                     return;
                 };
-                defer allocator.free(content);
+                // safe-transpile: free removed (memory owned by safe type);
                 var iter = std.mem.splitScalar(u8, content, '\n');
                 while (iter.next()) |line| {
                     if (line.len > 0) {
@@ -214,37 +217,37 @@ pub fn main() !void {
                 }
                 saw_explicit_expr = true;
             }
-        } else if (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "--silent")) {
+        } else if (safe.SimdUtils.eql(arg, "-n") or safe.SimdUtils.eql(arg, "--quiet") or safe.SimdUtils.eql(arg, "--silent")) {
             suppress_output = true;
-        } else if (std.mem.eql(u8, arg, "-z") or std.mem.eql(u8, arg, "--null-data")) {
+        } else if (safe.SimdUtils.eql(arg, "-z") or safe.SimdUtils.eql(arg, "--null-data")) {
             null_data = true;
-        } else if (std.mem.eql(u8, arg, "-u") or std.mem.eql(u8, arg, "--unbuffered")) {
+        } else if (safe.SimdUtils.eql(arg, "-u") or safe.SimdUtils.eql(arg, "--unbuffered")) {
             unbuffered = true;
-        } else if (std.mem.eql(u8, arg, "-E") or std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "--regexp-extended")) {
+        } else if (safe.SimdUtils.eql(arg, "-E") or safe.SimdUtils.eql(arg, "-r") or safe.SimdUtils.eql(arg, "--regexp-extended")) {
             use_extended_regex = true;
-        } else if (std.mem.eql(u8, arg, "-i")) {
+        } else if (safe.SimdUtils.eql(arg, "-i")) {
             in_place_suffix = "";
         } else if (std.mem.startsWith(u8, arg, "-i")) {
             in_place_suffix = arg[2..]; // -i.bak -> .bak
-        } else if (std.mem.eql(u8, arg, "--in-place")) {
+        } else if (safe.SimdUtils.eql(arg, "--in-place")) {
             in_place_suffix = "";
         } else if (std.mem.startsWith(u8, arg, "--in-place=")) {
             in_place_suffix = arg["--in-place=".len..];
-        } else if (std.mem.eql(u8, arg, "--cpu") or std.mem.eql(u8, arg, "--cpu-optimized")) {
+        } else if (safe.SimdUtils.eql(arg, "--cpu") or safe.SimdUtils.eql(arg, "--cpu-optimized")) {
             backend_mode = .cpu_mode;
-        } else if (std.mem.eql(u8, arg, "--gnu")) {
+        } else if (safe.SimdUtils.eql(arg, "--gnu")) {
             backend_mode = .cpu_gnu;
-        } else if (std.mem.eql(u8, arg, "--gpu")) {
+        } else if (safe.SimdUtils.eql(arg, "--gpu")) {
             backend_mode = .gpu_mode;
-        } else if (std.mem.eql(u8, arg, "--metal")) {
+        } else if (safe.SimdUtils.eql(arg, "--metal")) {
             backend_mode = .metal;
-        } else if (std.mem.eql(u8, arg, "--vulkan")) {
+        } else if (safe.SimdUtils.eql(arg, "--vulkan")) {
             backend_mode = .vulkan;
-        } else if (std.mem.eql(u8, arg, "--auto")) {
+        } else if (safe.SimdUtils.eql(arg, "--auto")) {
             backend_mode = .auto;
-        } else if (std.mem.eql(u8, arg, "-V") or std.mem.eql(u8, arg, "--verbose")) {
+        } else if (safe.SimdUtils.eql(arg, "-V") or safe.SimdUtils.eql(arg, "--verbose")) {
             verbose = true;
-        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        } else if (safe.SimdUtils.eql(arg, "-h") or safe.SimdUtils.eql(arg, "--help")) {
             printUsage();
             return;
         } else if (arg[0] != '-') {
@@ -302,6 +305,7 @@ pub fn main() !void {
     if (verbose) {
         std.debug.print("sed - GPU-accelerated sed\n", .{});
         std.debug.print("Expressions: {d}\n", .{commands.items.len});
+        // safe-transpile: for with index access requires manual review
         for (commands.items, 0..) |cmd, idx| {
             std.debug.print("  [{d}] {s}: pattern=\"{s}\"", .{ idx, @tagName(cmd.cmd_type), cmd.pattern });
             if (cmd.replacement.len > 0) {
@@ -319,7 +323,7 @@ pub fn main() !void {
     } else {
         for (files.items) |filepath| {
             // Handle "-" as stdin
-            if (std.mem.eql(u8, filepath, "-")) {
+            if (safe.SimdUtils.eql(filepath, "-")) {
                 try processStdinMulti(allocator, commands.items, backend_mode, verbose, suppress_output, null_data);
             } else {
                 try processFileMulti(allocator, filepath, commands.items, backend_mode, verbose, in_place_suffix, suppress_output, null_data);
@@ -329,6 +333,7 @@ pub fn main() !void {
 }
 
 /// Check if pattern requires regex processing
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn needsRegex(pattern: []const u8, options: SubstituteOptions) bool {
     if (options.extended) return true;
     // For BRE mode (default), also use regex for special characters
@@ -350,6 +355,7 @@ fn needsRegex(pattern: []const u8, options: SubstituteOptions) bool {
 }
 
 /// Choose appropriate find function based on options (literal vs regex)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn doFindMatches(text: []const u8, pattern: []const u8, options: SubstituteOptions, allocator: std.mem.Allocator) !gpu.SubstituteResult {
     if (needsRegex(pattern, options)) {
         return cpu.findMatchesRegex(text, pattern, options, allocator);
@@ -362,8 +368,12 @@ fn processStdin(allocator: std.mem.Allocator, cmd: SedCommand, backend_mode: Bac
     var stdin_list: std.ArrayListUnmanaged(u8) = .{};
     defer stdin_list.deinit(allocator);
 
-    var buf: [4096]u8 = undefined;
+    var buf: [4096]u8 = .{};
+    var __zust_loop_counter: u64 = 0;
     while (true) {
+        __zust_loop_counter += 1;
+        if (__zust_loop_counter > 1_000_000) return error.InfiniteLoop;
+
         const bytes_read = std.posix.read(std.posix.STDIN_FILENO, &buf) catch |err| {
             if (err == error.WouldBlock) continue;
             return err;
@@ -403,6 +413,7 @@ fn processStdin(allocator: std.mem.Allocator, cmd: SedCommand, backend_mode: Bac
 }
 
 /// Count total lines in text
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn countLines(text: []const u8) u32 {
     var count: u32 = 1; // Start at 1 (line numbers are 1-indexed)
     for (text) |c| {
@@ -416,6 +427,8 @@ fn countLines(text: []const u8) u32 {
 }
 
 /// Read file contents for sed r command
+// safe-transpile: function uses raw slice parameter — consider safe.String
+// safe-transpile: function returns small constant slice — consider safe.String
 fn readFileContents(allocator: std.mem.Allocator, filepath: []const u8) ![]u8 {
     const file = try std.fs.cwd().openFile(filepath, .{});
     defer file.close();
@@ -423,6 +436,8 @@ fn readFileContents(allocator: std.mem.Allocator, filepath: []const u8) ![]u8 {
 }
 
 /// Apply a single command to text and return the result
+// safe-transpile: function uses raw slice parameter — consider safe.String
+// safe-transpile: function returns small constant slice — consider safe.String
 fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend) ![]u8 {
     // Count total lines for address handling
     const total_lines = countLines(text);
@@ -516,6 +531,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
             errdefer output.deinit(allocator);
 
             var last_pos: usize = 0;
+            // safe-transpile: for with index access requires manual review
             for (result.matches, 0..) |match, mi| {
                 try output.appendSlice(allocator, text[last_pos..match.start]);
                 // Append replacement with & and \1-\9 expansion
@@ -602,15 +618,15 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
         .transliterate => {
             // Copy and transliterate
             const copy = try allocator.dupe(u8, text);
-            errdefer allocator.free(copy);
+            // safe-transpile: free removed (memory owned by safe type);
 
             const src_chars = cmd.pattern;
             const dst_chars = cmd.replacement;
 
-            for (copy) |*c| {
+            for (0..copy.len) |i| {
                 for (src_chars, 0..) |src, j| {
-                    if (c.* == src and j < dst_chars.len) {
-                        c.* = dst_chars[j];
+                    if (copy[i] == src and j < dst_chars.len) {
+                        copy[i] = dst_chars[j];
                         break;
                     }
                 }
@@ -623,7 +639,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
                 std.debug.print("sed: {s}: {}\n", .{ cmd.file_path, err });
                 return allocator.dupe(u8, text);
             };
-            defer allocator.free(file_content);
+            // safe-transpile: free removed (memory owned by safe type);
 
             var output: std.ArrayListUnmanaged(u8) = .{};
             errdefer output.deinit(allocator);
@@ -650,6 +666,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
 
             while (i < text.len) : (i += 1) {
                 if (text[i] == '\n') {
+                    // safe-transpile: optional unwrap requires manual review
                     const should_append = match_all_lines or if (use_address) cmd.address.?.matches(line_num, total_lines) else matched_lines.contains(line_num - 1);
                     try output.appendSlice(allocator, text[line_start .. i + 1]);
                     if (should_append) {
@@ -664,6 +681,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
             }
             // Handle last line without newline
             if (line_start < text.len) {
+                // safe-transpile: optional unwrap requires manual review
                 const should_append = match_all_lines or if (use_address) cmd.address.?.matches(line_num, total_lines) else matched_lines.contains(line_num - 1);
                 try output.appendSlice(allocator, text[line_start..]);
                 if (should_append) {
@@ -703,6 +721,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
 
             while (i < text.len) : (i += 1) {
                 if (text[i] == '\n') {
+                    // safe-transpile: optional unwrap requires manual review
                     const should_write = match_all_lines or if (use_address) cmd.address.?.matches(line_num, total_lines) else matched_lines.contains(line_num - 1);
                     if (should_write) {
                         try file.writeAll(text[line_start .. i + 1]);
@@ -713,6 +732,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
             }
             // Handle last line without newline
             if (line_start < text.len) {
+                // safe-transpile: optional unwrap requires manual review
                 const should_write = match_all_lines or if (use_address) cmd.address.?.matches(line_num, total_lines) else matched_lines.contains(line_num - 1);
                 if (should_write) {
                     try file.writeAll(text[line_start..]);
@@ -721,12 +741,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
 
             return allocator.dupe(u8, text);
         },
-        .next, .append_next, .quit, .line_number,
-        .append_text, .insert_text, .change_text,
-        .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
-        .label, .branch, .branch_not, .branch_unconditional,
-        .delete_first, .print_first, .comment, .list_unambiguously,
-        .execute_cmd, .version => {
+        .next, .append_next, .quit, .line_number, .append_text, .insert_text, .change_text, .hold, .get_hold, .append_hold, .get_append_hold, .exchange, .label, .branch, .branch_not, .branch_unconditional, .delete_first, .print_first, .comment, .list_unambiguously, .execute_cmd, .version => {
             // These commands require line-by-line processing and should not be called here
             return allocator.dupe(u8, text);
         },
@@ -739,8 +754,12 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
     var stdin_list: std.ArrayListUnmanaged(u8) = .{};
     defer stdin_list.deinit(allocator);
 
-    var buf: [4096]u8 = undefined;
+    var buf: [4096]u8 = .{};
+    var __zust_loop_counter: u64 = 0;
     while (true) {
+        __zust_loop_counter += 1;
+        if (__zust_loop_counter > 1_000_000) return error.InfiniteLoop;
+
         const bytes_read = std.posix.read(std.posix.STDIN_FILENO, &buf) catch |err| {
             if (err == error.WouldBlock) continue;
             return err;
@@ -764,6 +783,7 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
         const writer = struct {
             buffer: *std.ArrayListUnmanaged(u8),
             allocator: std.mem.Allocator,
+            // safe-transpile: function uses raw slice parameter — consider safe.String
             pub fn writeAll(self: @This(), data: []const u8) !void {
                 try self.buffer.appendSlice(self.allocator, data);
             }
@@ -781,11 +801,13 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
     }
 
     // Start with the original text
-    var current_text: []u8 = try allocator.dupe(u8, stdin_list.items);
+    var current_text: safe.Slice(u8) = try allocator.dupe(u8, stdin_list.items);
 
     // Apply each command in sequence
+    // safe-transpile: for with index access requires manual review
     for (commands, 0..) |cmd, idx| {
         const backend: gpu.Backend = switch (backend_mode) {
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .auto => selectOptimalBackend(cmd.pattern.len, @intCast(current_text.len)),
             .gpu_mode => if (build_options.is_macos) .metal else .vulkan,
             .cpu_mode, .cpu_gnu => .cpu,
@@ -798,10 +820,10 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
         }
 
         const new_text = try applyCommand(allocator, current_text, cmd, backend);
-        allocator.free(current_text);
+        // safe-transpile: free removed (memory owned by safe type);
         current_text = new_text;
     }
-    defer allocator.free(current_text);
+    // safe-transpile: free removed (memory owned by safe type);
 
     // Output result (unless suppressed)
     if (!suppress_output) {
@@ -810,6 +832,8 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
 }
 
 /// Execute text as a shell command and return stdout output
+// safe-transpile: function uses raw slice parameter — consider safe.String
+// safe-transpile: function returns small constant slice — consider safe.String
 fn executeShellCommand(allocator: std.mem.Allocator, command_text: []const u8) ![]u8 {
     var child = std.process.Child.init(&.{ "/bin/sh", "-c", command_text }, allocator);
     child.stdout_behavior = .Pipe;
@@ -820,8 +844,12 @@ fn executeShellCommand(allocator: std.mem.Allocator, command_text: []const u8) !
     errdefer output.deinit(allocator);
 
     if (child.stdout) |stdout| {
-        var buf: [4096]u8 = undefined;
+        var buf: [4096]u8 = .{};
+        var __zust_loop_counter: u64 = 0;
         while (true) {
+            __zust_loop_counter += 1;
+            if (__zust_loop_counter > 1_000_000) return error.InfiniteLoop;
+
             const bytes_read = stdout.read(&buf) catch break;
             if (bytes_read == 0) break;
             try output.appendSlice(allocator, buf[0..bytes_read]);
@@ -842,11 +870,7 @@ fn executeShellCommand(allocator: std.mem.Allocator, command_text: []const u8) !
 fn needsLineByLine(commands: []const SedCommand) bool {
     for (commands) |cmd| {
         switch (cmd.cmd_type) {
-            .next, .append_next, .quit, .line_number, .print,
-            .append_text, .insert_text, .change_text,
-            .hold, .get_hold, .append_hold, .get_append_hold, .exchange,
-            .label, .branch, .branch_not, .branch_unconditional,
-            .delete_first, .print_first, .list_unambiguously, .execute_cmd => return true,
+            .next, .append_next, .quit, .line_number, .print, .append_text, .insert_text, .change_text, .hold, .get_hold, .append_hold, .get_append_hold, .exchange, .label, .branch, .branch_not, .branch_unconditional, .delete_first, .print_first, .list_unambiguously, .execute_cmd => return true,
             .substitute => if (cmd.options.execute or cmd.options.w_file != null) return true,
             else => {},
         }
@@ -855,6 +879,7 @@ fn needsLineByLine(commands: []const SedCommand) bool {
 }
 
 /// Process text line-by-line with sed commands
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: []const SedCommand, _backend_mode: BackendMode, verbose: bool, suppress_output: bool, null_data: bool, out_writer: anytype) !void {
     _ = _backend_mode;
     const line_delim: u8 = if (null_data) 0 else '\n';
@@ -870,9 +895,10 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
     var label_map: std.StringHashMapUnmanaged(usize) = .{};
     defer {
         var it = label_map.iterator();
-        while (it.next()) |entry| allocator.free(entry.key_ptr.*);
-        label_map.deinit(allocator);
+        while (it.next()) |entry| // safe-transpile: free removed (memory owned by safe type);
+            label_map.deinit(allocator);
     }
+    // safe-transpile: for with index access requires manual review
     for (commands, 0..) |cmd, idx| {
         if (cmd.cmd_type == .label and cmd.label.len > 0) {
             const key = try allocator.dupe(u8, cmd.label);
@@ -929,317 +955,318 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                 }
 
                 switch (cmd.cmd_type) {
-                .label => {
-                    // No-op: label definition
-                },
-                .branch => {
-                    // t label: branch if last substitute succeeded
-                    if (last_substitute_succeeded) {
-                        if (cmd.label.len > 0) {
-                            if (label_map.get(cmd.label)) |target_idx| {
-                                cmd_idx = target_idx;
-                                last_substitute_succeeded = false;
-                                continue;
-                            }
-                        } else {
-                            // t with no label = jump to end of script
-                            break;
-                        }
-                    }
-                    last_substitute_succeeded = false;
-                },
-                .branch_not => {
-                    // T label: branch if last substitute failed
-                    if (!last_substitute_succeeded) {
-                        if (cmd.label.len > 0) {
-                            if (label_map.get(cmd.label)) |target_idx| {
-                                cmd_idx = target_idx;
-                                last_substitute_succeeded = false;
-                                continue;
-                            }
-                        } else {
-                            // T with no label = jump to end of script
-                            break;
-                        }
-                    }
-                    last_substitute_succeeded = false;
-                },
-                .branch_unconditional => {
-                    // b label: branch unconditionally
-                    if (cmd.label.len > 0) {
-                        if (label_map.get(cmd.label)) |target_idx| {
-                            cmd_idx = target_idx;
-                            continue;
-                        }
-                    } else {
-                        // b with no label = jump to end of script
-                        break;
-                    }
-                },
-                .substitute => {
-                    const search_pattern = if (std.mem.indexOfScalar(u8, cmd.pattern, '\\') != null)
-                        try unescapePattern(allocator, cmd.pattern)
-                    else
-                        cmd.pattern;
-                    defer if (search_pattern.ptr != cmd.pattern.ptr) allocator.free(search_pattern);
-                    var result = try doFindMatches(pattern_space.items, search_pattern, cmd.options, allocator);
-                    defer result.deinit();
-                    var new_space: std.ArrayListUnmanaged(u8) = .{};
-                    errdefer new_space.deinit(allocator);
-                    var last_p: usize = 0;
-                    for (result.matches, 0..) |match, mi| {
-                        try new_space.appendSlice(allocator, pattern_space.items[last_p..match.start]);
-                        const matched_text = pattern_space.items[match.start..match.end];
-                        const cg = if (result.captures) |caps| caps[mi] else null;
-                        try processReplacement(cmd.replacement, matched_text, &new_space, allocator, pattern_space.items, cg);
-                        last_p = match.end;
-                    }
-                    try new_space.appendSlice(allocator, pattern_space.items[last_p..]);
-                    pattern_space.deinit(allocator);
-                    pattern_space = new_space;
-                    last_substitute_succeeded = result.matches.len > 0;
-                    // s///e: execute pattern space as shell command, replace with output
-                    if (cmd.options.execute and result.matches.len > 0) {
-                        const cmd_output = try executeShellCommand(allocator, pattern_space.items);
-                        defer allocator.free(cmd_output);
-                        pattern_space.clearRetainingCapacity();
-                        try pattern_space.appendSlice(allocator, cmd_output);
-                    }
-                    // s///w file: write changed line to file
-                    if (cmd.options.w_file) |w_filepath| {
-                        if (result.matches.len > 0) {
-                            const w_file = blk: {
-                                break :blk std.fs.cwd().openFile(w_filepath, .{ .mode = .read_write }) catch {
-                                    break :blk std.fs.cwd().createFile(w_filepath, .{}) catch continue;
-                                };
-                            };
-                            w_file.seekFromEnd(0) catch {};
-                            _ = w_file.write(pattern_space.items) catch {};
-                            _ = w_file.write("\n") catch {};
-                            w_file.close();
-                        }
-                    }
-                },
-                .delete => {
-                    pattern_space.clearRetainingCapacity();
-                    should_print = false;
-                    skip_to_next = true;
-                    if (manual_advance) {
-                        // d after n/N: skip the loaded line and continue to next
-                        manual_advance = false;
-                        if (has_delim) {
-                            pos = line_end + 1;
-                            line_num += 1;
-                        }
-                    }
-                },
-                .print => {
-                    try out_writer.writeAll(pattern_space.items);
-                    if (has_delim) try out_writer.writeAll(&[_]u8{line_delim});
-                },
-                .list_unambiguously => {
-                    // List pattern space unambiguously: show special chars as escapes
-                    for (pattern_space.items) |c| {
-                        switch (c) {
-                            '\\' => try out_writer.writeAll("\\\\"),
-                            '\n' => try out_writer.writeAll("\\n"),
-                            '\t' => try out_writer.writeAll("\\t"),
-                            '\r' => try out_writer.writeAll("\\r"),
-                            '\x0c' => try out_writer.writeAll("\\f"),
-                            '\x07' => try out_writer.writeAll("\\a"),
-                            else => {
-                                if (c < 32 or c > 126) {
-                                    var buf: [8]u8 = undefined;
-                                    const esc = std.fmt.bufPrint(&buf, "\\{o:0>3}", .{c}) catch "\\?";
-                                    try out_writer.writeAll(esc);
-                                } else {
-                                    try out_writer.writeAll(&[_]u8{c});
+                    .label => {
+                        // No-op: label definition
+                    },
+                    .branch => {
+                        // t label: branch if last substitute succeeded
+                        if (last_substitute_succeeded) {
+                            if (cmd.label.len > 0) {
+                                if (label_map.get(cmd.label)) |target_idx| {
+                                    cmd_idx = target_idx;
+                                    last_substitute_succeeded = false;
+                                    continue;
                                 }
-                            },
-                        }
-                    }
-                    try out_writer.writeAll("$\\n");
-                },
-                .comment => {
-                    // Comments are ignored during execution
-                },
-                .transliterate => {
-                    for (pattern_space.items) |*c| {
-                        for (cmd.pattern, 0..) |src, j| {
-                            if (c.* == src and j < cmd.replacement.len) {
-                                c.* = cmd.replacement[j];
+                            } else {
+                                // t with no label = jump to end of script
                                 break;
                             }
                         }
-                    }
-                },
-                .read_file => {
-                    if (cmd.file_path.len > 0) {
-                        const content = readFileContents(allocator, cmd.file_path) catch "";
-                        defer if (content.len > 0) allocator.free(content);
-                        try out_writer.writeAll(pattern_space.items);
-                        if (has_delim) try out_writer.writeAll(&[_]u8{line_delim});
-                        try out_writer.writeAll(content);
-                        if (content.len > 0 and content[content.len - 1] != line_delim) {
-                            try out_writer.writeAll(&[_]u8{line_delim});
+                        last_substitute_succeeded = false;
+                    },
+                    .branch_not => {
+                        // T label: branch if last substitute failed
+                        if (!last_substitute_succeeded) {
+                            if (cmd.label.len > 0) {
+                                if (label_map.get(cmd.label)) |target_idx| {
+                                    cmd_idx = target_idx;
+                                    last_substitute_succeeded = false;
+                                    continue;
+                                }
+                            } else {
+                                // T with no label = jump to end of script
+                                break;
+                            }
                         }
+                        last_substitute_succeeded = false;
+                    },
+                    .branch_unconditional => {
+                        // b label: branch unconditionally
+                        if (cmd.label.len > 0) {
+                            if (label_map.get(cmd.label)) |target_idx| {
+                                cmd_idx = target_idx;
+                                continue;
+                            }
+                        } else {
+                            // b with no label = jump to end of script
+                            break;
+                        }
+                    },
+                    .substitute => {
+                        const search_pattern = if (std.mem.indexOfScalar(u8, cmd.pattern, '\\') != null)
+                            try unescapePattern(allocator, cmd.pattern)
+                        else
+                            cmd.pattern;
+                        // safe-transpile: free removed (memory owned by safe type);
+                        var result = try doFindMatches(pattern_space.items, search_pattern, cmd.options, allocator);
+                        defer result.deinit();
+                        var new_space: std.ArrayListUnmanaged(u8) = .{};
+                        errdefer new_space.deinit(allocator);
+                        var last_p: usize = 0;
+                        // safe-transpile: for with index access requires manual review
+                        for (result.matches, 0..) |match, mi| {
+                            try new_space.appendSlice(allocator, pattern_space.items[last_p..match.start]);
+                            const matched_text = pattern_space.items[match.start..match.end];
+                            const cg = if (result.captures) |caps| caps[mi] else null;
+                            try processReplacement(cmd.replacement, matched_text, &new_space, allocator, pattern_space.items, cg);
+                            last_p = match.end;
+                        }
+                        try new_space.appendSlice(allocator, pattern_space.items[last_p..]);
+                        pattern_space.deinit(allocator);
+                        pattern_space = new_space;
+                        last_substitute_succeeded = result.matches.len > 0;
+                        // s///e: execute pattern space as shell command, replace with output
+                        if (cmd.options.execute and result.matches.len > 0) {
+                            const cmd_output = try executeShellCommand(allocator, pattern_space.items);
+                            // safe-transpile: free removed (memory owned by safe type);
+                            pattern_space.clearRetainingCapacity();
+                            try pattern_space.appendSlice(allocator, cmd_output);
+                        }
+                        // s///w file: write changed line to file
+                        if (cmd.options.w_file) |w_filepath| {
+                            if (result.matches.len > 0) {
+                                const w_file = blk: {
+                                    break :blk std.fs.cwd().openFile(w_filepath, .{ .mode = .read_write }) catch {
+                                        break :blk std.fs.cwd().createFile(w_filepath, .{}) catch continue;
+                                    };
+                                };
+                                w_file.seekFromEnd(0) catch {};
+                                _ = w_file.write(pattern_space.items) catch {};
+                                _ = w_file.write("\n") catch {};
+                                w_file.close();
+                            }
+                        }
+                    },
+                    .delete => {
+                        pattern_space.clearRetainingCapacity();
                         should_print = false;
                         skip_to_next = true;
-                    }
-                },
-                .write_file => {
-                    if (cmd.file_path.len > 0) {
-                        var f = std.fs.cwd().createFile(cmd.file_path, .{ .truncate = false }) catch |err| {
-                            std.debug.print("sed: {s}: {}\n", .{ cmd.file_path, err });
-                            continue;
-                        };
-                        defer f.close();
-                        try f.writeAll(pattern_space.items);
-                        if (has_delim) try f.writeAll(&[_]u8{line_delim});
-                    }
-                },
-                .next => {
-                    if (should_print) {
+                        if (manual_advance) {
+                            // d after n/N: skip the loaded line and continue to next
+                            manual_advance = false;
+                            if (has_delim) {
+                                pos = line_end + 1;
+                                line_num += 1;
+                            }
+                        }
+                    },
+                    .print => {
                         try out_writer.writeAll(pattern_space.items);
                         if (has_delim) try out_writer.writeAll(&[_]u8{line_delim});
-                    }
-                    // Read next line into pattern space
-                    if (has_delim) {
-                        pos = line_end + 1;
-                        line_num += 1;
-                        // Find next line end
-                        var next_end = pos;
-                        while (next_end < text.len and text[next_end] != line_delim) next_end += 1;
+                    },
+                    .list_unambiguously => {
+                        // List pattern space unambiguously: show special chars as escapes
+                        for (pattern_space.items) |c| {
+                            switch (c) {
+                                '\\' => try out_writer.writeAll("\\\\"),
+                                '\n' => try out_writer.writeAll("\\n"),
+                                '\t' => try out_writer.writeAll("\\t"),
+                                '\r' => try out_writer.writeAll("\\r"),
+                                '\x0c' => try out_writer.writeAll("\\f"),
+                                '\x07' => try out_writer.writeAll("\\a"),
+                                else => {
+                                    if (c < 32 or c > 126) {
+                                        var buf: [8]u8 = .{};
+                                        const esc = std.fmt.bufPrint(&buf, "\\{o:0>3}", .{c}) catch "\\?";
+                                        try out_writer.writeAll(esc);
+                                    } else {
+                                        try out_writer.writeAll(&[_]u8{c});
+                                    }
+                                },
+                            }
+                        }
+                        try out_writer.writeAll("$\\n");
+                    },
+                    .comment => {
+                        // Comments are ignored during execution
+                    },
+                    .transliterate => {
+                        for (0..pattern_space.items.len) |i| {
+                            for (cmd.pattern, 0..) |src, j| {
+                                if (pattern_space.items[i] == src and j < cmd.replacement.len) {
+                                    pattern_space.items[i] = cmd.replacement[j];
+                                    break;
+                                }
+                            }
+                        }
+                    },
+                    .read_file => {
+                        if (cmd.file_path.len > 0) {
+                            const content = readFileContents(allocator, cmd.file_path) catch "";
+                            // safe-transpile: free removed (memory owned by safe type);
+                            try out_writer.writeAll(pattern_space.items);
+                            if (has_delim) try out_writer.writeAll(&[_]u8{line_delim});
+                            try out_writer.writeAll(content);
+                            if (content.len > 0 and content[content.len - 1] != line_delim) {
+                                try out_writer.writeAll(&[_]u8{line_delim});
+                            }
+                            should_print = false;
+                            skip_to_next = true;
+                        }
+                    },
+                    .write_file => {
+                        if (cmd.file_path.len > 0) {
+                            var f = std.fs.cwd().createFile(cmd.file_path, .{ .truncate = false }) catch |err| {
+                                std.debug.print("sed: {s}: {}\n", .{ cmd.file_path, err });
+                                continue;
+                            };
+                            defer f.close();
+                            try f.writeAll(pattern_space.items);
+                            if (has_delim) try f.writeAll(&[_]u8{line_delim});
+                        }
+                    },
+                    .next => {
+                        if (should_print) {
+                            try out_writer.writeAll(pattern_space.items);
+                            if (has_delim) try out_writer.writeAll(&[_]u8{line_delim});
+                        }
+                        // Read next line into pattern space
+                        if (has_delim) {
+                            pos = line_end + 1;
+                            line_num += 1;
+                            // Find next line end
+                            var next_end = pos;
+                            while (next_end < text.len and text[next_end] != line_delim) next_end += 1;
+                            pattern_space.clearRetainingCapacity();
+                            try pattern_space.appendSlice(allocator, text[pos..next_end]);
+                            line_end = next_end;
+                            has_delim = line_end < text.len;
+                            manual_advance = true;
+                            should_print = !suppress_output;
+                        } else {
+                            // No next line: print pattern space and exit (GNU sed behavior)
+                            try out_writer.writeAll(pattern_space.items);
+                            if (pattern_space.items.len > 0 and pattern_space.items[pattern_space.items.len - 1] != line_delim) {
+                                try out_writer.writeAll(&[_]u8{line_delim});
+                            }
+                            should_print = false;
+                            quit_requested = true;
+                        }
+                    },
+                    .append_next => {
+                        // Append next line to pattern space
+                        if (has_delim and line_end + 1 < text.len) {
+                            try pattern_space.append(allocator, line_delim);
+                            var next_end = line_end + 1;
+                            while (next_end < text.len and text[next_end] != line_delim) next_end += 1;
+                            try pattern_space.appendSlice(allocator, text[line_end + 1 .. next_end]);
+                            line_end = next_end;
+                            has_delim = line_end < text.len;
+                        } else {
+                            // No next line: print pattern space and exit (GNU sed behavior)
+                            try out_writer.writeAll(pattern_space.items);
+                            if (pattern_space.items.len > 0 and pattern_space.items[pattern_space.items.len - 1] != line_delim) {
+                                try out_writer.writeAll(&[_]u8{line_delim});
+                            }
+                            should_print = false;
+                            quit_requested = true;
+                        }
+                    },
+                    .quit => {
+                        g_sed_quit_code = cmd.exit_code;
+                        quit_requested = true;
+                    },
+                    .line_number => {
+                        var num_buf: [16]u8 = .{};
+                        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{line_num}) catch "";
+                        try out_writer.writeAll(num_str);
+                        try out_writer.writeAll(&[_]u8{line_delim});
+                    },
+                    .append_text => {
+                        if (cmd.text.len > 0) {
+                            try append_texts.append(allocator, cmd.text);
+                        }
+                    },
+                    .insert_text => {
+                        if (cmd.text.len > 0) {
+                            try insert_texts.append(allocator, cmd.text);
+                        }
+                    },
+                    .change_text => {
+                        if (cmd.text.len > 0) {
+                            change_text = cmd.text;
+                        }
                         pattern_space.clearRetainingCapacity();
-                        try pattern_space.appendSlice(allocator, text[pos..next_end]);
-                        line_end = next_end;
-                        has_delim = line_end < text.len;
-                        manual_advance = true;
-                        should_print = !suppress_output;
-                    } else {
-                        // No next line: print pattern space and exit (GNU sed behavior)
-                        try out_writer.writeAll(pattern_space.items);
-                        if (pattern_space.items.len > 0 and pattern_space.items[pattern_space.items.len - 1] != line_delim) {
-                            try out_writer.writeAll(&[_]u8{line_delim});
-                        }
                         should_print = false;
-                        quit_requested = true;
-                    }
-                },
-                .append_next => {
-                    // Append next line to pattern space
-                    if (has_delim and line_end + 1 < text.len) {
-                        try pattern_space.append(allocator, line_delim);
-                        var next_end = line_end + 1;
-                        while (next_end < text.len and text[next_end] != line_delim) next_end += 1;
-                        try pattern_space.appendSlice(allocator, text[line_end + 1 .. next_end]);
-                        line_end = next_end;
-                        has_delim = line_end < text.len;
-                    } else {
-                        // No next line: print pattern space and exit (GNU sed behavior)
-                        try out_writer.writeAll(pattern_space.items);
-                        if (pattern_space.items.len > 0 and pattern_space.items[pattern_space.items.len - 1] != line_delim) {
-                            try out_writer.writeAll(&[_]u8{line_delim});
-                        }
-                        should_print = false;
-                        quit_requested = true;
-                    }
-                },
-                .quit => {
-                    g_sed_quit_code = cmd.exit_code;
-                    quit_requested = true;
-                },
-                .line_number => {
-                    var num_buf: [16]u8 = undefined;
-                    const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{line_num}) catch "";
-                    try out_writer.writeAll(num_str);
-                    try out_writer.writeAll(&[_]u8{line_delim});
-                },
-                .append_text => {
-                    if (cmd.text.len > 0) {
-                        try append_texts.append(allocator, cmd.text);
-                    }
-                },
-                .insert_text => {
-                    if (cmd.text.len > 0) {
-                        try insert_texts.append(allocator, cmd.text);
-                    }
-                },
-                .change_text => {
-                    if (cmd.text.len > 0) {
-                        change_text = cmd.text;
-                    }
-                    pattern_space.clearRetainingCapacity();
-                    should_print = false;
-                    skip_to_next = true;
-                },
-                .hold => {
-                    hold_space.clearRetainingCapacity();
-                    try hold_space.appendSlice(allocator, pattern_space.items);
-                },
-                .append_hold => {
-                    try hold_space.append(allocator, line_delim);
-                    try hold_space.appendSlice(allocator, pattern_space.items);
-                },
-                .get_hold => {
-                    pattern_space.clearRetainingCapacity();
-                    try pattern_space.appendSlice(allocator, hold_space.items);
-                },
-                .get_append_hold => {
-                    if (hold_space.items.len > 0) {
-                        try pattern_space.append(allocator, line_delim);
+                        skip_to_next = true;
+                    },
+                    .hold => {
+                        hold_space.clearRetainingCapacity();
+                        try hold_space.appendSlice(allocator, pattern_space.items);
+                    },
+                    .append_hold => {
+                        try hold_space.append(allocator, line_delim);
+                        try hold_space.appendSlice(allocator, pattern_space.items);
+                    },
+                    .get_hold => {
+                        pattern_space.clearRetainingCapacity();
                         try pattern_space.appendSlice(allocator, hold_space.items);
-                    }
-                },
-                .exchange => {
-                    const tmp = try allocator.dupe(u8, pattern_space.items);
-                    defer allocator.free(tmp);
-                    pattern_space.clearRetainingCapacity();
-                    try pattern_space.appendSlice(allocator, hold_space.items);
-                    hold_space.clearRetainingCapacity();
-                    try hold_space.appendSlice(allocator, tmp);
-                },
-                .delete_first => {
-                    if (std.mem.indexOfScalar(u8, pattern_space.items, line_delim)) |newline_idx| {
-                        // Remove up to and including the first newline
-                        const remaining_text = pattern_space.items[newline_idx + 1 ..];
+                    },
+                    .get_append_hold => {
+                        if (hold_space.items.len > 0) {
+                            try pattern_space.append(allocator, line_delim);
+                            try pattern_space.appendSlice(allocator, hold_space.items);
+                        }
+                    },
+                    .exchange => {
+                        const tmp = try allocator.dupe(u8, pattern_space.items);
+                        // safe-transpile: free removed (memory owned by safe type);
                         pattern_space.clearRetainingCapacity();
-                        try pattern_space.appendSlice(allocator, remaining_text);
-                        cycle_restart = true;
-                        should_print = !suppress_output;
-                        skip_to_next = false;
-                        cmd_idx = commands.len; // break inner loop
-                    } else {
-                        // No newline: act like d
+                        try pattern_space.appendSlice(allocator, hold_space.items);
+                        hold_space.clearRetainingCapacity();
+                        try hold_space.appendSlice(allocator, tmp);
+                    },
+                    .delete_first => {
+                        if (std.mem.indexOfScalar(u8, pattern_space.items, line_delim)) |newline_idx| {
+                            // Remove up to and including the first newline
+                            const remaining_text = pattern_space.items[newline_idx + 1 ..];
+                            pattern_space.clearRetainingCapacity();
+                            try pattern_space.appendSlice(allocator, remaining_text);
+                            cycle_restart = true;
+                            should_print = !suppress_output;
+                            skip_to_next = false;
+                            cmd_idx = commands.len; // break inner loop
+                        } else {
+                            // No newline: act like d
+                            pattern_space.clearRetainingCapacity();
+                            should_print = false;
+                            skip_to_next = true;
+                        }
+                    },
+                    .print_first => {
+                        if (std.mem.indexOfScalar(u8, pattern_space.items, line_delim)) |newline_idx| {
+                            try out_writer.writeAll(pattern_space.items[0..newline_idx]);
+                        } else {
+                            try out_writer.writeAll(pattern_space.items);
+                        }
+                        try out_writer.writeAll(&[_]u8{line_delim});
+                    },
+                    .execute_cmd => {
+                        const cmd_output = try executeShellCommand(allocator, pattern_space.items);
+                        // safe-transpile: free removed (memory owned by safe type);
                         pattern_space.clearRetainingCapacity();
-                        should_print = false;
-                        skip_to_next = true;
-                    }
-                },
-                .print_first => {
-                    if (std.mem.indexOfScalar(u8, pattern_space.items, line_delim)) |newline_idx| {
-                        try out_writer.writeAll(pattern_space.items[0..newline_idx]);
-                    } else {
-                        try out_writer.writeAll(pattern_space.items);
-                    }
-                    try out_writer.writeAll(&[_]u8{line_delim});
-                },
-                .execute_cmd => {
-                    const cmd_output = try executeShellCommand(allocator, pattern_space.items);
-                    defer allocator.free(cmd_output);
-                    pattern_space.clearRetainingCapacity();
-                    try pattern_space.appendSlice(allocator, cmd_output);
-                    // Remove trailing newline if present (GNU sed behavior)
-                    if (pattern_space.items.len > 0 and pattern_space.items[pattern_space.items.len - 1] == '\n') {
-                        pattern_space.items.len -= 1;
-                    }
-                },
-                .version => {
-                    try out_writer.writeAll("e-jerk sed 0.2.0\n");
-                },
+                        try pattern_space.appendSlice(allocator, cmd_output);
+                        // Remove trailing newline if present (GNU sed behavior)
+                        if (pattern_space.items.len > 0 and pattern_space.items[pattern_space.items.len - 1] == '\n') {
+                            pattern_space.items.len -= 1;
+                        }
+                    },
+                    .version => {
+                        try out_writer.writeAll("e-jerk sed 0.2.0\n");
+                    },
+                }
+                cmd_idx += 1;
             }
-            cmd_idx += 1;
-        }
         } // end cycle_restart loop
 
         // Output insert texts before the line
@@ -1279,6 +1306,7 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
 }
 
 /// Process file with multiple commands
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands: []const SedCommand, backend_mode: BackendMode, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool, null_data: bool) !void {
     const file = std.fs.cwd().openFile(filepath, .{}) catch |err| {
         std.debug.print("Error opening {s}: {}\n", .{ filepath, err });
@@ -1303,19 +1331,20 @@ fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands
         const writer = struct {
             buffer: *std.ArrayListUnmanaged(u8),
             allocator: std.mem.Allocator,
+            // safe-transpile: function uses raw slice parameter — consider safe.String
             pub fn writeAll(self: @This(), data: []const u8) !void {
                 try self.buffer.appendSlice(self.allocator, data);
             }
         }{ .buffer = &output_buffer, .allocator = allocator };
 
         try processLineByLine(allocator, original_text, commands, backend_mode, verbose, suppress_output, null_data, writer);
-        allocator.free(original_text);
+        // safe-transpile: free removed (memory owned by safe type);
 
         // Write output
         if (in_place_suffix) |suffix| {
             if (suffix.len > 0) {
                 const backup_path = try std.mem.concat(allocator, u8, &.{ filepath, suffix });
-                defer allocator.free(backup_path);
+                // safe-transpile: free removed (memory owned by safe type);
                 try std.fs.cwd().copyFile(filepath, std.fs.cwd(), backup_path, .{});
             }
             const out_file = try std.fs.cwd().createFile(filepath, .{});
@@ -1331,11 +1360,13 @@ fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands
     }
 
     // Start with the original text
-    var current_text: []u8 = original_text;
+    var current_text: safe.Slice(u8) = original_text;
 
     // Apply each command in sequence
+    // safe-transpile: for with index access requires manual review
     for (commands, 0..) |cmd, idx| {
         const backend: gpu.Backend = switch (backend_mode) {
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .auto => selectOptimalBackend(cmd.pattern.len, @intCast(current_text.len)),
             .gpu_mode => if (build_options.is_macos) .metal else .vulkan,
             .cpu_mode, .cpu_gnu => .cpu,
@@ -1348,17 +1379,17 @@ fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands
         }
 
         const new_text = try applyCommand(allocator, current_text, cmd, backend);
-        allocator.free(current_text);
+        // safe-transpile: free removed (memory owned by safe type);
         current_text = new_text;
     }
-    defer allocator.free(current_text);
+    // safe-transpile: free removed (memory owned by safe type);
 
     // Write output
     if (in_place_suffix) |suffix| {
         // Create backup if suffix is non-empty
         if (suffix.len > 0) {
             const backup_path = try std.mem.concat(allocator, u8, &.{ filepath, suffix });
-            defer allocator.free(backup_path);
+            // safe-transpile: free removed (memory owned by safe type);
             try std.fs.cwd().copyFile(filepath, std.fs.cwd(), backup_path, .{});
         }
         const out_file = try std.fs.cwd().createFile(filepath, .{});
@@ -1369,6 +1400,7 @@ fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands
     }
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn processSubstituteStdin(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, suppress_output: bool) !void {
     // Find matches
     var result = switch (backend) {
@@ -1426,10 +1458,11 @@ fn processSubstituteStdin(allocator: std.mem.Allocator, text: []const u8, cmd: S
     }
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn processTransliterateStdin(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, verbose: bool, suppress_output: bool) !void {
     const mutable_text = try allocator.alloc(u8, text.len);
-    defer allocator.free(mutable_text);
-    @memcpy(mutable_text, text);
+    // safe-transpile: free removed (memory owned by safe type);
+    safe.SimdUtils.copy(mutable_text, text);
 
     cpu.transliterate(mutable_text, cmd.pattern, cmd.replacement);
 
@@ -1442,6 +1475,7 @@ fn processTransliterateStdin(allocator: std.mem.Allocator, text: []const u8, cmd
     }
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn parseSedExpression(expr: []const u8) !SedCommand {
     if (expr.len < 1) return error.InvalidExpression;
 
@@ -1485,12 +1519,14 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
             i += 1;
             if (i < expr.len) {
                 if (expr[i] == '$') {
+                    // safe-transpile: optional unwrap requires manual review
                     address.?.end_is_last = true;
                     i += 1;
                 } else if (expr[i] >= '0' and expr[i] <= '9') {
                     var j = i;
                     while (j < expr.len and expr[j] >= '0' and expr[j] <= '9') : (j += 1) {}
                     const end_num = std.fmt.parseInt(u32, expr[i..j], 10) catch return error.InvalidExpression;
+                    // safe-transpile: optional unwrap requires manual review
                     address.?.end = end_num;
                     i = j;
                 }
@@ -1508,6 +1544,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
                 var j = cmd_start;
                 while (j < expr.len and expr[j] >= '0' and expr[j] <= '9') : (j += 1) {}
                 const end_num = std.fmt.parseInt(u32, expr[cmd_start..j], 10) catch return error.InvalidExpression;
+                // safe-transpile: optional unwrap requires manual review
                 address.?.end = end_num;
                 cmd_start = j;
             }
@@ -1528,10 +1565,11 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
     // Check for transliterate (y/source/dest/)
     if (remaining[0] == 'y' and remaining.len >= 4) {
         const delim = remaining[1];
-        var parts: [3][]const u8 = undefined;
+        var parts: [3][]const u8 = .{};
         var part_idx: usize = 0;
         var start: usize = 2;
 
+        // safe-transpile: for with index access requires manual review
         for (remaining[2..], 2..) |c, idx| {
             if (c == delim) {
                 parts[part_idx] = remaining[start..idx];
@@ -1988,6 +2026,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
     return error.InvalidExpression;
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn processFile(allocator: std.mem.Allocator, filepath: []const u8, cmd: SedCommand, backend_mode: BackendMode, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool) !void {
     const file = std.fs.cwd().openFile(filepath, .{}) catch |err| {
         std.debug.print("Error opening {s}: {}\n", .{ filepath, err });
@@ -2003,7 +2042,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, cmd: SedComma
     }
 
     const text = try file.readToEndAlloc(allocator, gpu.MAX_GPU_BUFFER_SIZE);
-    defer allocator.free(text);
+    // safe-transpile: free removed (memory owned by safe type);
 
     // Select backend
     // Note: cpu_gnu maps to .cpu backend but uses cpu_gnu module for matching
@@ -2038,6 +2077,7 @@ fn selectOptimalBackend(pattern_len: usize, file_size: u64) gpu.Backend {
     return .vulkan;
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn processSubstitute(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool, filepath: []const u8) !void {
     // Find matches
     var result = switch (backend) {
@@ -2102,7 +2142,7 @@ fn processSubstitute(allocator: std.mem.Allocator, text: []const u8, cmd: SedCom
         // Create backup if suffix is non-empty
         if (suffix.len > 0) {
             const backup_path = try std.mem.concat(allocator, u8, &.{ filepath, suffix });
-            defer allocator.free(backup_path);
+            // safe-transpile: free removed (memory owned by safe type);
             try std.fs.cwd().copyFile(filepath, std.fs.cwd(), backup_path, .{});
         }
         const out_file = try std.fs.cwd().createFile(filepath, .{});
@@ -2113,6 +2153,7 @@ fn processSubstitute(allocator: std.mem.Allocator, text: []const u8, cmd: SedCom
     }
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn processDelete(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, suppress_output: bool) !void {
     // Find matching lines
     var result = switch (backend) {
@@ -2165,6 +2206,7 @@ fn processDelete(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand
     var line_num: u32 = 0;
     var line_start: usize = 0;
 
+    // safe-transpile: for with index access requires manual review
     for (text, 0..) |c, i| {
         if (c == '\n' or i == text.len - 1) {
             const line_end = if (c == '\n') i + 1 else i + 1;
@@ -2177,6 +2219,7 @@ fn processDelete(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand
     }
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn processPrint(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, suppress_output: bool) !void {
     // Find matching lines
     var result = switch (backend) {
@@ -2229,6 +2272,7 @@ fn processPrint(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
     var line_num: u32 = 0;
     var line_start: usize = 0;
 
+    // safe-transpile: for with index access requires manual review
     for (text, 0..) |c, i| {
         if (c == '\n' or i == text.len - 1) {
             const line_end = if (c == '\n') i + 1 else i + 1;
@@ -2241,11 +2285,12 @@ fn processPrint(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
     }
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn processTransliterate(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool, filepath: []const u8) !void {
     // Make a mutable copy
     const mutable_text = try allocator.alloc(u8, text.len);
-    defer allocator.free(mutable_text);
-    @memcpy(mutable_text, text);
+    // safe-transpile: free removed (memory owned by safe type);
+    safe.SimdUtils.copy(mutable_text, text);
 
     // Transliterate
     _ = backend; // TODO: GPU transliterate
@@ -2259,7 +2304,7 @@ fn processTransliterate(allocator: std.mem.Allocator, text: []const u8, cmd: Sed
         // Create backup if suffix is non-empty
         if (suffix.len > 0) {
             const backup_path = try std.mem.concat(allocator, u8, &.{ filepath, suffix });
-            defer allocator.free(backup_path);
+            // safe-transpile: free removed (memory owned by safe type);
             try std.fs.cwd().copyFile(filepath, std.fs.cwd(), backup_path, .{});
         }
         const out_file = try std.fs.cwd().createFile(filepath, .{});

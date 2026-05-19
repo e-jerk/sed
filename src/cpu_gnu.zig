@@ -10,6 +10,7 @@ const SubstituteResult = gpu.SubstituteResult;
 /// making it difficult to extract just the pattern matching functionality.
 /// This backend delegates to the optimized implementation which uses the same
 /// gnulib-derived algorithms for string matching.
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn findMatches(text: []const u8, pattern: []const u8, options: SubstituteOptions, allocator: std.mem.Allocator) !SubstituteResult {
     // Delegate to optimized backend - same algorithms, just the Zig SIMD implementation
     return cpu_optimized.findMatches(text, pattern, options, allocator);
@@ -17,6 +18,7 @@ pub fn findMatches(text: []const u8, pattern: []const u8, options: SubstituteOpt
 
 /// GNU sed backend for regex pattern matching.
 /// Delegates to optimized backend since GNU sed's regex is part of its command processor.
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: SubstituteOptions, allocator: std.mem.Allocator) !SubstituteResult {
     return cpu_optimized.findMatchesRegex(text, pattern, options, allocator);
 }

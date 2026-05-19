@@ -17,19 +17,18 @@ const UPPER_Z_VEC16: Vec16 = @splat('Z');
 const CASE_DIFF_VEC16: Vec16 = @splat(32);
 
 /// CPU-based substitute/search using SIMD-optimized Boyer-Moore-Horspool algorithm
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn findMatches(text: []const u8, pattern: []const u8, options: SubstituteOptions, allocator: std.mem.Allocator) !SubstituteResult {
     if (pattern.len == 0 or text.len < pattern.len) {
         return SubstituteResult{ .matches = &.{}, .total_matches = 0, .allocator = allocator };
     }
 
     // Pre-compute lowercase pattern if case insensitive
-    var lower_pattern_buf: [1024]u8 = undefined;
-    const search_pattern = if (options.case_insensitive and pattern.len <= 1024) blk: {
+    var lower_pattern_buf: [1024]u8 = .{};
+    const skip_table = if (options.case_insensitive and pattern.len <= 1024) blk: {
         toLowerSlice(pattern, lower_pattern_buf[0..pattern.len]);
-        break :blk lower_pattern_buf[0..pattern.len];
-    } else pattern;
-
-    const skip_table = buildSkipTable(search_pattern, options.case_insensitive);
+        break :blk buildSkipTable(lower_pattern_buf[0..pattern.len], options.case_insensitive);
+    } else buildSkipTable(pattern, options.case_insensitive);
 
     var matches: std.ArrayListUnmanaged(MatchResult) = .{};
     defer matches.deinit(allocator);
@@ -68,7 +67,9 @@ pub fn findMatches(text: []const u8, pattern: []const u8, options: SubstituteOpt
             }
 
             try matches.append(allocator, MatchResult{
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .start = @intCast(pos),
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .end = @intCast(pos + pattern.len),
                 .line_num = line_num,
             });
@@ -100,6 +101,7 @@ pub fn findMatches(text: []const u8, pattern: []const u8, options: SubstituteOpt
 }
 
 /// SIMD-optimized pattern matching at a specific position
+// safe-transpile: function uses raw slice parameter — consider safe.String
 inline fn matchAtPositionSIMD(text: []const u8, pos: usize, pattern: []const u8, case_insensitive: bool) bool {
     if (pos + pattern.len > text.len) return false;
 
@@ -137,6 +139,7 @@ inline fn matchAtPositionSIMD(text: []const u8, pos: usize, pattern: []const u8,
 }
 
 /// SIMD-optimized newline finder
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn findNextNewlineSIMD(text: []const u8, start: usize) usize {
     var i = start;
 
@@ -175,6 +178,7 @@ inline fn toLowerChar(c: u8) u8 {
 }
 
 /// Convert slice to lowercase using SIMD
+// safe-transpile: function uses raw slice parameter — consider safe.String
 inline fn toLowerSlice(src: []const u8, dst: []u8) void {
     var i: usize = 0;
     // Process 16 bytes at a time
@@ -192,10 +196,13 @@ inline fn toLowerSlice(src: []const u8, dst: []u8) void {
 }
 
 /// CPU-based transliterate (y/source/dest/) with SIMD optimization
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn transliterate(text: []u8, source: []const u8, dest: []const u8) void {
     // Build translation table
-    var table: [256]u8 = undefined;
-    for (&table, 0..) |*t, i| t.* = @intCast(i);
+    var table: [256]u8 = .{};
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
+    // safe-transpile: for with index access requires manual review
+    for (&table, 0..) |*t, i| t[0] = @intCast(i);
 
     const len = @min(source.len, dest.len);
     for (0..len) |i| {
@@ -221,10 +228,12 @@ pub fn transliterate(text: []u8, source: []const u8, dest: []const u8) void {
 }
 
 /// Build skip table for Boyer-Moore-Horspool
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn buildSkipTable(pattern: []const u8, case_insensitive: bool) [256]usize {
-    var table: [256]usize = undefined;
+    var table: [256]usize = .{};
     @memset(&table, pattern.len);
 
+    // safe-transpile: for with index access requires manual review
     for (pattern[0 .. pattern.len - 1], 0..) |c, i| {
         const skip = pattern.len - 1 - i;
         if (case_insensitive) {
@@ -241,6 +250,7 @@ pub fn buildSkipTable(pattern: []const u8, case_insensitive: bool) [256]usize {
 
 /// CPU-based regex match finding using Thompson NFA
 /// Supports BRE (Basic Regular Expressions) and ERE (Extended Regular Expressions)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: SubstituteOptions, allocator: std.mem.Allocator) !SubstituteResult {
     // Empty pattern - match empty string at start (GNU sed behavior)
     if (pattern.len == 0) {
@@ -259,7 +269,7 @@ pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: Substitu
         try convertBREtoERE(pattern, allocator)
     else
         null;
-    defer if (ere_pattern) |p| allocator.free(p);
+    // safe-transpile: free removed (memory owned by safe type);
 
     const actual_pattern = ere_pattern orelse pattern;
 
@@ -337,7 +347,9 @@ pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: Substitu
                 }
 
                 try matches.append(allocator, MatchResult{
+                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                     .start = @intCast(m.start),
+                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                     .end = @intCast(m.end),
                     .line_num = line_num,
                 });
@@ -346,6 +358,8 @@ pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: Substitu
                 var gi: usize = 1;
                 while (gi <= 9 and gi < m.groups.len) : (gi += 1) {
                     if (m.groups[gi]) |g| {
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         cg.groups[gi - 1] = .{ @intCast(g.start), @intCast(g.end) };
                         cg.count += 1;
                     } else break;
@@ -378,6 +392,8 @@ pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: Substitu
 /// Convert BRE (Basic Regular Expression) pattern to ERE (Extended Regular Expression)
 /// In BRE: \+ \? \| \( \) \{ \} are special, unescaped versions are literal
 /// In ERE: + ? | ( ) { } are special, escaped versions are literal
+// safe-transpile: function uses raw slice parameter — consider safe.String
+// safe-transpile: function returns small constant slice — consider safe.String
 fn convertBREtoERE(bre_pattern: []const u8, allocator: std.mem.Allocator) ![]u8 {
     var result: std.ArrayListUnmanaged(u8) = .{};
     defer result.deinit(allocator);
