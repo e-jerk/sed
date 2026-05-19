@@ -1,4 +1,5 @@
 const std = @import("std");
+const safe = @import("safe");
 const gpu = @import("gpu");
 const regex = @import("regex");
 
@@ -24,13 +25,13 @@ pub fn findMatches(text: []const u8, pattern: []const u8, options: SubstituteOpt
     }
 
     // Pre-compute lowercase pattern if case insensitive
-    var lower_pattern_buf: [1024]u8 = .{};
+    var lower_pattern_buf: [1024]u8 = undefined;
     const skip_table = if (options.case_insensitive and pattern.len <= 1024) blk: {
         toLowerSlice(pattern, lower_pattern_buf[0..pattern.len]);
         break :blk buildSkipTable(lower_pattern_buf[0..pattern.len], options.case_insensitive);
     } else buildSkipTable(pattern, options.case_insensitive);
 
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches: std.ArrayListUnmanaged(MatchResult) = std.ArrayListUnmanaged(MatchResult).empty;
     defer matches.deinit(allocator);
 
     var pos: usize = 0;
@@ -59,7 +60,7 @@ pub fn findMatches(text: []const u8, pattern: []const u8, options: SubstituteOpt
             continue;
         }
 
-        if (matchAtPositionSIMD(text, pos, search_pattern, options.case_insensitive)) {
+        if (matchAtPositionSIMD(text, pos, pattern, options.case_insensitive)) {
             // For non-global mode, only match first occurrence per line
             if (!options.global and found_in_line) {
                 pos = findNextNewlineSIMD(text, pos) + 1;
@@ -230,7 +231,7 @@ pub fn transliterate(text: []u8, source: []const u8, dest: []const u8) void {
 /// Build skip table for Boyer-Moore-Horspool
 // safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn buildSkipTable(pattern: []const u8, case_insensitive: bool) [256]usize {
-    var table: [256]usize = .{};
+    var table: [256]usize = undefined;
     @memset(&table, pattern.len);
 
     // safe-transpile: for with index access requires manual review
@@ -254,7 +255,7 @@ pub fn buildSkipTable(pattern: []const u8, case_insensitive: bool) [256]usize {
 pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: SubstituteOptions, allocator: std.mem.Allocator) !SubstituteResult {
     // Empty pattern - match empty string at start (GNU sed behavior)
     if (pattern.len == 0) {
-        var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches: std.ArrayListUnmanaged(MatchResult) = std.ArrayListUnmanaged(MatchResult).empty;
         try matches.append(allocator, MatchResult{
             .start = 0,
             .end = 0,
@@ -269,7 +270,7 @@ pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: Substitu
         try convertBREtoERE(pattern, allocator)
     else
         null;
-    // safe-transpile: free removed (memory owned by safe type);
+    defer if (ere_pattern) |p| allocator.free(p);
 
     const actual_pattern = ere_pattern orelse pattern;
 
@@ -292,9 +293,9 @@ pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: Substitu
     };
     defer compiled.deinit();
 
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches: std.ArrayListUnmanaged(MatchResult) = std.ArrayListUnmanaged(MatchResult).empty;
     defer matches.deinit(allocator);
-    var captures_list: std.ArrayListUnmanaged(gpu.CaptureGroups) = .{};
+    var captures_list: std.ArrayListUnmanaged(gpu.CaptureGroups) = std.ArrayListUnmanaged(gpu.CaptureGroups).empty;
     defer captures_list.deinit(allocator);
 
     var total_matches: u64 = 0;
@@ -395,7 +396,7 @@ pub fn findMatchesRegex(text: []const u8, pattern: []const u8, options: Substitu
 // safe-transpile: function uses raw slice parameter — consider safe.String
 // safe-transpile: function returns small constant slice — consider safe.String
 fn convertBREtoERE(bre_pattern: []const u8, allocator: std.mem.Allocator) ![]u8 {
-    var result: std.ArrayListUnmanaged(u8) = .{};
+    var result: std.ArrayListUnmanaged(u8) = std.ArrayListUnmanaged(u8).empty;
     defer result.deinit(allocator);
 
     var i: usize = 0;

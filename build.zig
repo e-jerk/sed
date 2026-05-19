@@ -28,9 +28,8 @@ pub fn build(b: *std.Build) void {
     const build_options_module = build_options.createModule();
 
     // zust safe module for memory-safe types
-    const safe_module = b.addModule("safe", .{
-        .root_source_file = b.path("../zust/lib/safe.zig"),
-    });
+    const zust_dep = b.dependency("zust", .{});
+    const safe_module = zust_dep.module("safe");
 
     // e_jerk_gpu library for GPU detection and auto-selection (also provides zigtrait)
     const e_jerk_gpu_dep = b.dependency("e_jerk_gpu", .{});

@@ -1,4 +1,5 @@
 const std = @import("std");
+const safe = @import("safe");
 const builtin = @import("builtin");
 const vk = @import("vulkan");
 const spirv = @import("spirv");
@@ -104,7 +105,7 @@ pub const VulkanSubstituter = struct {
         _ = try vki.enumeratePhysicalDevices(instance, &device_count, null);
         if (device_count == 0) return error.NoVulkanDevice;
 
-        var physical_devices: [16]vk.PhysicalDevice = .{};
+        var physical_devices: [16]vk.PhysicalDevice = undefined;
         device_count = @min(device_count, 16);
         _ = try vki.enumeratePhysicalDevices(instance, &device_count, &physical_devices);
 
@@ -117,7 +118,7 @@ pub const VulkanSubstituter = struct {
 
             var queue_count: u32 = 0;
             vki.getPhysicalDeviceQueueFamilyProperties(pdev, &queue_count, null);
-            var queue_props: [32]vk.QueueFamilyProperties = .{};
+            var queue_props: [32]vk.QueueFamilyProperties = undefined;
             queue_count = @min(queue_count, 32);
             vki.getPhysicalDeviceQueueFamilyProperties(pdev, &queue_count, &queue_props);
 
@@ -187,15 +188,16 @@ pub const VulkanSubstituter = struct {
         }, null) catch return error.PipelineLayoutCreationFailed;
         errdefer vkd.destroyPipelineLayout(device, pipeline_layout, null);
 
-        var compute_pipeline: vk.Pipeline = std.mem.zeroes(vk.Pipeline);
-        _ = vkd.createComputePipelines(device, .null_handle, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&vk.ComputePipelineCreateInfo{
+        var compute_pipelines = [_]vk.Pipeline{std.mem.zeroes(vk.Pipeline)};
+        _ = vkd.createComputePipelines(device, .null_handle, &[_]vk.ComputePipelineCreateInfo{
+            .{
                 .stage = .{ .stage = .{ .compute_bit = true }, .module = shader_module, .p_name = "main", .p_specialization_info = null },
                 .layout = pipeline_layout,
                 .base_pipeline_handle = .null_handle,
                 .base_pipeline_index = -1,
-            }), null, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&compute_pipeline)) catch return error.ComputePipelineCreationFailed;
+            },
+        }, null, &compute_pipelines) catch return error.ComputePipelineCreationFailed;
+        const compute_pipeline = compute_pipelines[0];
         errdefer vkd.destroyPipeline(device, compute_pipeline, null);
 
         const pool_sizes = [_]vk.DescriptorPoolSize{
@@ -277,9 +279,9 @@ pub const VulkanSubstituter = struct {
         }, null) catch return error.PipelineLayoutCreationFailed;
         errdefer vkd.destroyPipelineLayout(device, regex_pipeline_layout, null);
 
-        var regex_compute_pipeline: vk.Pipeline = std.mem.zeroes(vk.Pipeline);
-        _ = vkd.createComputePipelines(device, .null_handle, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&vk.ComputePipelineCreateInfo{
+        var regex_compute_pipelines = [_]vk.Pipeline{std.mem.zeroes(vk.Pipeline)};
+        _ = vkd.createComputePipelines(device, .null_handle, &[_]vk.ComputePipelineCreateInfo{
+            .{
                 .stage = .{
                     .stage = .{ .compute_bit = true },
                     .module = regex_shader_module,
@@ -289,12 +291,13 @@ pub const VulkanSubstituter = struct {
                 .layout = regex_pipeline_layout,
                 .base_pipeline_handle = .null_handle,
                 .base_pipeline_index = -1,
-            }), null, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&regex_compute_pipeline)) catch return error.ComputePipelineCreationFailed;
+            },
+        }, null, &regex_compute_pipelines) catch return error.ComputePipelineCreationFailed;
+        const regex_compute_pipeline = regex_compute_pipelines[0];
         errdefer vkd.destroyPipeline(device, regex_compute_pipeline, null);
 
         const self = try safe.Box(Self).init(allocator, undefined);
-        self[0] = Self{
+        self.ptr.* = Self{
             .instance = instance,
             .physical_device = physical_device,
             .device = device,
@@ -318,7 +321,7 @@ pub const VulkanSubstituter = struct {
             .vkd = vkd,
             .capabilities = capabilities,
         };
-        return self;
+        return self.ptr;
     }
 
     pub fn deinit(self: *Self) void {
@@ -398,8 +401,8 @@ pub const VulkanSubstituter = struct {
         defer self.destroyBuffer(placeholder_buffer);
 
         // Copy data
-        safe.SimdUtils.copy(@as([*]u8, @ptrCast(text_buffer.mapped))[0..text.len], text);
-        safe.SimdUtils.copy(@as([*]u8, @ptrCast(pattern_buffer.mapped))[0..pattern.len], pattern);
+        @memcpy(@as([*]u8, @ptrCast(text_buffer.mapped))[0..text.len], text);
+        @memcpy(@as([*]u8, @ptrCast(pattern_buffer.mapped))[0..pattern.len], pattern);
 
         @as(*SubstituteConfig, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
             @ptrCast(@alignCast(config_buffer.mapped))).* = SubstituteConfig{
@@ -528,19 +531,17 @@ pub const VulkanSubstituter = struct {
                 .p_texel_buffer_view = undefined,
             },
         };
-        self.vkd.updateDescriptorSets(self.device, 8, &writes, 0, undefined);
+        self.vkd.updateDescriptorSets(self.device, &writes, null);
 
         // Record and submit
         var command_buffer: vk.CommandBuffer = std.mem.zeroes(vk.CommandBuffer);
         self.vkd.allocateCommandBuffers(self.device, &.{ .command_pool = self.command_pool, .level = .primary, .command_buffer_count = 1 }, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
             @ptrCast(&command_buffer)) catch return error.CommandBufferAllocationFailed;
-        defer self.vkd.freeCommandBuffers(self.device, self.command_pool, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&command_buffer));
+        defer self.vkd.freeCommandBuffers(self.device, self.command_pool, &[_]vk.CommandBuffer{command_buffer});
 
         self.vkd.beginCommandBuffer(command_buffer, &.{ .flags = .{ .one_time_submit_bit = true } }) catch return error.CommandBufferBeginFailed;
         self.vkd.cmdBindPipeline(command_buffer, .compute, self.compute_pipeline);
-        self.vkd.cmdBindDescriptorSets(command_buffer, .compute, self.pipeline_layout, 0, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&descriptor_set), 0, undefined);
+        self.vkd.cmdBindDescriptorSets(command_buffer, .compute, self.pipeline_layout, 0, &[_]vk.DescriptorSet{descriptor_set}, null);
 
         // Use chunked processing - dispatch fewer workgroups for efficiency
         // Each thread handles multiple positions (similar to Metal approach)
@@ -550,21 +551,18 @@ pub const VulkanSubstituter = struct {
         self.vkd.cmdDispatch(command_buffer, @intCast(workgroups), 1, 1);
         self.vkd.endCommandBuffer(command_buffer) catch return error.CommandBufferEndFailed;
 
-        self.vkd.queueSubmit(self.compute_queue, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&vk.SubmitInfo{
-                .wait_semaphore_count = 0,
-                .p_wait_semaphores = undefined,
-                .p_wait_dst_stage_mask = undefined,
-                .command_buffer_count = 1,
-                .p_command_buffers = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-                @ptrCast(&command_buffer),
-                .signal_semaphore_count = 0,
-                .p_signal_semaphores = undefined,
-            }), self.fence) catch return error.QueueSubmitFailed;
-        _ = self.vkd.waitForFences(self.device, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&self.fence), .true, std.math.maxInt(u64)) catch return error.FenceWaitFailed;
-        self.vkd.resetFences(self.device, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&self.fence)) catch return error.FenceResetFailed;
+        self.vkd.queueSubmit(self.compute_queue, &[_]vk.SubmitInfo{.{
+            .wait_semaphore_count = 0,
+            .p_wait_semaphores = undefined,
+            .p_wait_dst_stage_mask = undefined,
+            .command_buffer_count = 1,
+            .p_command_buffers = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+            @ptrCast(&command_buffer),
+            .signal_semaphore_count = 0,
+            .p_signal_semaphores = undefined,
+        }}, self.fence) catch return error.QueueSubmitFailed;
+        _ = self.vkd.waitForFences(self.device, &[_]vk.Fence{self.fence}, .true, std.math.maxInt(u64)) catch return error.FenceWaitFailed;
+        self.vkd.resetFences(self.device, &[_]vk.Fence{self.fence}) catch return error.FenceResetFailed;
 
         // Read results
         const counters_ptr: *[2]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
@@ -575,7 +573,7 @@ pub const VulkanSubstituter = struct {
         const num_to_copy = @min(match_count, MAX_RESULTS);
         var matches = try result_allocator.alloc(MatchResult, num_to_copy);
         if (num_to_copy > 0) {
-            safe.SimdUtils.copy(matches, @as([*]MatchResult, @ptrCast(@alignCast(results_buffer.mapped)))[0..num_to_copy]);
+            @memcpy(matches, @as([*]MatchResult, @ptrCast(@alignCast(results_buffer.mapped)))[0..num_to_copy]);
         }
 
         // For first_only mode, filter to keep only first match per line
@@ -704,7 +702,7 @@ pub const VulkanSubstituter = struct {
         defer self.destroyBuffer(line_lengths_buffer);
 
         // Upload data
-        safe.SimdUtils.copy(@as([*]u8, @ptrCast(text_buffer.mapped))[0..text.len], text);
+        @memcpy(@as([*]u8, @ptrCast(text_buffer.mapped))[0..text.len], text);
 
         // Pack states into GPU format (3 u32s per state)
         const states_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
@@ -725,7 +723,7 @@ pub const VulkanSubstituter = struct {
         if (gpu_regex.bitmaps.len > 0) {
             const bitmaps_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(bitmaps_buffer.mapped));
-            safe.SimdUtils.copy(bitmaps_ptr[0..gpu_regex.bitmaps.len], gpu_regex.bitmaps);
+            @memcpy(bitmaps_ptr[0..gpu_regex.bitmaps.len], gpu_regex.bitmaps);
         }
 
         // Upload config
@@ -753,8 +751,8 @@ pub const VulkanSubstituter = struct {
         header_ptr[3] = gpu_regex.header.flags;
 
         // Upload line data
-        safe.SimdUtils.copy(@as([*]u32, @ptrCast(@alignCast(line_offsets_buffer.mapped)))[0..num_lines], line_offsets_slice);
-        safe.SimdUtils.copy(@as([*]u32, @ptrCast(@alignCast(line_lengths_buffer.mapped)))[0..num_lines], line_lengths_slice);
+        @memcpy(@as([*]u32, @ptrCast(@alignCast(line_offsets_buffer.mapped)))[0..num_lines], line_offsets_slice);
+        @memcpy(@as([*]u32, @ptrCast(@alignCast(line_lengths_buffer.mapped)))[0..num_lines], line_lengths_slice);
 
         // Zero counters
         const counters_ptr: *[2]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
@@ -795,7 +793,7 @@ pub const VulkanSubstituter = struct {
             .{ .buffer = line_lengths_buffer.buffer, .offset = 0, .range = line_offsets_size },
         };
 
-        var writes: [9]vk.WriteDescriptorSet = .{};
+        var writes: [9]vk.WriteDescriptorSet = undefined;
         for (0..9) |i| {
             writes[i] = .{
                 .dst_set = descriptor_set,
@@ -810,7 +808,7 @@ pub const VulkanSubstituter = struct {
                 .p_texel_buffer_view = undefined,
             };
         }
-        self.vkd.updateDescriptorSets(self.device, 9, &writes, 0, undefined);
+        self.vkd.updateDescriptorSets(self.device, &writes, null);
 
         // Allocate and record command buffer
         var command_buffer: vk.CommandBuffer = std.mem.zeroes(vk.CommandBuffer);
@@ -820,13 +818,11 @@ pub const VulkanSubstituter = struct {
             .command_buffer_count = 1,
         }, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
             @ptrCast(&command_buffer)) catch return error.CommandBufferAllocationFailed;
-        defer self.vkd.freeCommandBuffers(self.device, self.command_pool, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&command_buffer));
+        defer self.vkd.freeCommandBuffers(self.device, self.command_pool, &[_]vk.CommandBuffer{command_buffer});
 
         self.vkd.beginCommandBuffer(command_buffer, &.{ .flags = .{ .one_time_submit_bit = true } }) catch return error.CommandBufferBeginFailed;
         self.vkd.cmdBindPipeline(command_buffer, .compute, self.regex_compute_pipeline);
-        self.vkd.cmdBindDescriptorSets(command_buffer, .compute, self.regex_pipeline_layout, 0, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&descriptor_set), 0, undefined);
+        self.vkd.cmdBindDescriptorSets(command_buffer, .compute, self.regex_pipeline_layout, 0, &[_]vk.DescriptorSet{descriptor_set}, null);
 
         // Dispatch one thread per line (local_size_x = 64 in shader)
         const workgroups = @max(1, (num_lines + 63) / 64);
@@ -835,21 +831,18 @@ pub const VulkanSubstituter = struct {
         self.vkd.endCommandBuffer(command_buffer) catch return error.CommandBufferEndFailed;
 
         // Submit and wait
-        self.vkd.queueSubmit(self.compute_queue, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&vk.SubmitInfo{
-                .wait_semaphore_count = 0,
-                .p_wait_semaphores = undefined,
-                .p_wait_dst_stage_mask = undefined,
-                .command_buffer_count = 1,
-                .p_command_buffers = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-                @ptrCast(&command_buffer),
-                .signal_semaphore_count = 0,
-                .p_signal_semaphores = undefined,
-            }), self.fence) catch return error.QueueSubmitFailed;
-        _ = self.vkd.waitForFences(self.device, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&self.fence), .true, std.math.maxInt(u64)) catch return error.FenceWaitFailed;
-        self.vkd.resetFences(self.device, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&self.fence)) catch return error.FenceResetFailed;
+        self.vkd.queueSubmit(self.compute_queue, &[_]vk.SubmitInfo{.{
+            .wait_semaphore_count = 0,
+            .p_wait_semaphores = undefined,
+            .p_wait_dst_stage_mask = undefined,
+            .command_buffer_count = 1,
+            .p_command_buffers = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+            @ptrCast(&command_buffer),
+            .signal_semaphore_count = 0,
+            .p_signal_semaphores = undefined,
+        }}, self.fence) catch return error.QueueSubmitFailed;
+        _ = self.vkd.waitForFences(self.device, &[_]vk.Fence{self.fence}, .true, std.math.maxInt(u64)) catch return error.FenceWaitFailed;
+        self.vkd.resetFences(self.device, &[_]vk.Fence{self.fence}) catch return error.FenceResetFailed;
 
         // Read results
         const result_count = counters_ptr[0];
@@ -858,7 +851,7 @@ pub const VulkanSubstituter = struct {
         const num_to_copy = @min(result_count, MAX_RESULTS);
         const matches = try result_allocator.alloc(MatchResult, num_to_copy);
         if (num_to_copy > 0) {
-            safe.SimdUtils.copy(matches, @as([*]MatchResult, @ptrCast(@alignCast(results_buffer.mapped)))[0..num_to_copy]);
+            @memcpy(matches, @as([*]MatchResult, @ptrCast(@alignCast(results_buffer.mapped)))[0..num_to_copy]);
         }
 
         return SubstituteResult{ .matches = matches, .total_matches = total_matches, .allocator = result_allocator };

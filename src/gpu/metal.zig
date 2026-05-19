@@ -1,4 +1,5 @@
 const std = @import("std");
+const safe = @import("safe");
 const mtl = @import("zig-metal");
 const mod = @import("mod.zig");
 const regex_compiler = @import("regex_compiler.zig");
@@ -91,7 +92,7 @@ pub const MetalSubstituter = struct {
         };
 
         const self = try safe.Box(Self).init(allocator, undefined);
-        self[0] = Self{
+        self.ptr.* = Self{
             .device = device,
             .command_queue = command_queue,
             .find_pipeline = find_pipeline,
@@ -102,7 +103,7 @@ pub const MetalSubstituter = struct {
             .threads_per_group = threads_per_group,
             .capabilities = capabilities,
         };
-        return self;
+        return self.ptr;
     }
 
     pub fn deinit(self: *Self) void {
@@ -137,7 +138,7 @@ pub const MetalSubstituter = struct {
         if (text_buffer.contents()) |ptr| {
             const text_ptr: [*]u8 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(ptr);
-            safe.SimdUtils.copy(text_ptr[0..text.len], text);
+            @memcpy(text_ptr[0..text.len], text);
         }
 
         const pattern_buffer = self.device.newBufferWithLengthOptions(pattern.len, mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
@@ -145,7 +146,7 @@ pub const MetalSubstituter = struct {
         if (pattern_buffer.contents()) |ptr| {
             const pattern_ptr: [*]u8 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(ptr);
-            safe.SimdUtils.copy(pattern_ptr[0..pattern.len], pattern);
+            @memcpy(pattern_ptr[0..pattern.len], pattern);
         }
 
         // Use chunked processing - each thread handles multiple positions
@@ -167,7 +168,7 @@ pub const MetalSubstituter = struct {
         if (config_buffer.contents()) |ptr| {
             const config_ptr: *SubstituteConfig = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(ptr));
-            config_ptr[0] = config;
+            config_ptr.* = config;
         }
 
         const results_size = @sizeOf(MatchResult) * MAX_RESULTS;
@@ -212,7 +213,7 @@ pub const MetalSubstituter = struct {
         if (num_to_copy > 0) {
             const results_ptr: [*]MatchResult = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(results_buffer.contents()));
-            safe.SimdUtils.copy(matches, results_ptr[0..num_to_copy]);
+            @memcpy(matches, results_ptr[0..num_to_copy]);
         }
 
         // For first_only mode, filter to keep only first match per line
@@ -319,7 +320,7 @@ pub const MetalSubstituter = struct {
         var text_buffer = self.device.newBufferWithLengthOptions(text.len, mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer text_buffer.release();
         if (text_buffer.contents()) |ptr| {
-            safe.SimdUtils.copy(@as([*]u8, @ptrCast(ptr))[0..text.len], text);
+            @memcpy(@as([*]u8, @ptrCast(ptr))[0..text.len], text);
         }
 
         // Create states buffer
@@ -330,7 +331,7 @@ pub const MetalSubstituter = struct {
             if (states_buffer.contents()) |ptr| {
                 const dst: [*]RegexState = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                     @ptrCast(@alignCast(ptr));
-                safe.SimdUtils.copy(dst[0..gpu_regex.states.len], gpu_regex.states);
+                @memcpy(dst[0..gpu_regex.states.len], gpu_regex.states);
             }
         }
 
@@ -342,7 +343,7 @@ pub const MetalSubstituter = struct {
             if (bitmaps_buffer.contents()) |ptr| {
                 const dst: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                     @ptrCast(@alignCast(ptr));
-                safe.SimdUtils.copy(dst[0..gpu_regex.bitmaps.len], gpu_regex.bitmaps);
+                @memcpy(dst[0..gpu_regex.bitmaps.len], gpu_regex.bitmaps);
             }
         }
 
@@ -390,13 +391,13 @@ pub const MetalSubstituter = struct {
         var line_offsets_buffer = self.device.newBufferWithLengthOptions(line_offsets.items.len * @sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer line_offsets_buffer.release();
         if (line_offsets_buffer.contents()) |ptr| {
-            safe.SimdUtils.copy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_offsets.items.len], line_offsets.items);
+            @memcpy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_offsets.items.len], line_offsets.items);
         }
 
         var line_lengths_buffer = self.device.newBufferWithLengthOptions(line_lengths.items.len * @sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer line_lengths_buffer.release();
         if (line_lengths_buffer.contents()) |ptr| {
-            safe.SimdUtils.copy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_lengths.items.len], line_lengths.items);
+            @memcpy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_lengths.items.len], line_lengths.items);
         }
 
         // Execute regex matching

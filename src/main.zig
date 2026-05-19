@@ -1,4 +1,5 @@
 const std = @import("std");
+const safe = @import("safe");
 const build_options = @import("build_options");
 const gpu = @import("gpu");
 const cpu = @import("cpu");
@@ -161,7 +162,7 @@ fn processReplacement(replacement: []const u8, matched_text: []const u8, output:
 }
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -895,7 +896,7 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
     var label_map: std.StringHashMapUnmanaged(usize) = .{};
     defer {
         var it = label_map.iterator();
-        while (it.next()) |entry| // safe-transpile: free removed (memory owned by safe type);
+        while (it.next()) |_| // safe-transpile: free removed (memory owned by safe type);
             label_map.deinit(allocator);
     }
     // safe-transpile: for with index access requires manual review
@@ -1462,7 +1463,7 @@ fn processSubstituteStdin(allocator: std.mem.Allocator, text: []const u8, cmd: S
 fn processTransliterateStdin(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, verbose: bool, suppress_output: bool) !void {
     const mutable_text = try allocator.alloc(u8, text.len);
     // safe-transpile: free removed (memory owned by safe type);
-    safe.SimdUtils.copy(mutable_text, text);
+    @memcpy(mutable_text, text);
 
     cpu.transliterate(mutable_text, cmd.pattern, cmd.replacement);
 
@@ -1492,7 +1493,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
 
     // Check for label definition (:label) — no address allowed
     if (expr[0] == ':') {
-        const label_name = std.mem.trimLeft(u8, expr[1..], " \t");
+        const label_name = std.mem.trimStart(u8, expr[1..], " \t");
         return SedCommand{
             .cmd_type = .label,
             .pattern = "",
@@ -1565,7 +1566,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
     // Check for transliterate (y/source/dest/)
     if (remaining[0] == 'y' and remaining.len >= 4) {
         const delim = remaining[1];
-        var parts: [3][]const u8 = .{};
+        var parts: [3][]const u8 = undefined;
         var part_idx: usize = 0;
         var start: usize = 2;
 
@@ -1715,7 +1716,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
 
     // Check for 'r FILE' (read file and append after matching lines)
     if (remaining[0] == 'r') {
-        const file_path = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " ") else "";
+        const file_path = if (remaining.len > 1) std.mem.trimStart(u8, remaining[1..], " ") else "";
         return SedCommand{
             .cmd_type = .read_file,
             .pattern = "", // No pattern - use address only
@@ -1729,7 +1730,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
 
     // Check for 'w FILE' (write matching lines to file)
     if (remaining[0] == 'w') {
-        const file_path = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " ") else "";
+        const file_path = if (remaining.len > 1) std.mem.trimStart(u8, remaining[1..], " ") else "";
         return SedCommand{
             .cmd_type = .write_file,
             .pattern = "", // No pattern - use address only
@@ -1829,7 +1830,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
 
     // Check for 'a' (append text after line)
     if (remaining[0] == 'a') {
-        const text = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " \\") else "";
+        const text = if (remaining.len > 1) std.mem.trimStart(u8, remaining[1..], " \\") else "";
         return SedCommand{
             .cmd_type = .append_text,
             .pattern = "",
@@ -1843,7 +1844,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
 
     // Check for 'i' (insert text before line)
     if (remaining[0] == 'i') {
-        const text = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " \\") else "";
+        const text = if (remaining.len > 1) std.mem.trimStart(u8, remaining[1..], " \\") else "";
         return SedCommand{
             .cmd_type = .insert_text,
             .pattern = "",
@@ -1857,7 +1858,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
 
     // Check for 'c' (change line to text)
     if (remaining[0] == 'c') {
-        const text = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " \\") else "";
+        const text = if (remaining.len > 1) std.mem.trimStart(u8, remaining[1..], " \\") else "";
         return SedCommand{
             .cmd_type = .change_text,
             .pattern = "",
@@ -1931,7 +1932,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
 
     // Check for 't' (branch to label if last substitute succeeded)
     if (remaining[0] == 't') {
-        const label_name = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " \t") else "";
+        const label_name = if (remaining.len > 1) std.mem.trimStart(u8, remaining[1..], " \t") else "";
         return SedCommand{
             .cmd_type = .branch,
             .pattern = "",
@@ -1945,7 +1946,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
 
     // Check for 'T' (branch to label if last substitute failed)
     if (remaining[0] == 'T') {
-        const label_name = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " \t") else "";
+        const label_name = if (remaining.len > 1) std.mem.trimStart(u8, remaining[1..], " \t") else "";
         return SedCommand{
             .cmd_type = .branch_not,
             .pattern = "",
@@ -1959,7 +1960,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
 
     // Check for 'b' (branch to label unconditionally)
     if (remaining[0] == 'b') {
-        const label_name = if (remaining.len > 1) std.mem.trimLeft(u8, remaining[1..], " \t") else "";
+        const label_name = if (remaining.len > 1) std.mem.trimStart(u8, remaining[1..], " \t") else "";
         return SedCommand{
             .cmd_type = .branch_unconditional,
             .pattern = "",
@@ -1992,7 +1993,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
         const cmd_char = if (pattern_end + 1 < remaining.len) remaining[pattern_end + 1] else 'p';
 
         if (cmd_char == 'r') {
-            const file_path = if (pattern_end + 2 < remaining.len) std.mem.trimLeft(u8, remaining[pattern_end + 2 ..], " ") else "";
+            const file_path = if (pattern_end + 2 < remaining.len) std.mem.trimStart(u8, remaining[pattern_end + 2 ..], " ") else "";
             return SedCommand{
                 .cmd_type = .read_file,
                 .pattern = pattern,
@@ -2002,7 +2003,7 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
                 .file_path = file_path,
             };
         } else if (cmd_char == 'w') {
-            const file_path = if (pattern_end + 2 < remaining.len) std.mem.trimLeft(u8, remaining[pattern_end + 2 ..], " ") else "";
+            const file_path = if (pattern_end + 2 < remaining.len) std.mem.trimStart(u8, remaining[pattern_end + 2 ..], " ") else "";
             return SedCommand{
                 .cmd_type = .write_file,
                 .pattern = pattern,
@@ -2290,7 +2291,7 @@ fn processTransliterate(allocator: std.mem.Allocator, text: []const u8, cmd: Sed
     // Make a mutable copy
     const mutable_text = try allocator.alloc(u8, text.len);
     // safe-transpile: free removed (memory owned by safe type);
-    safe.SimdUtils.copy(mutable_text, text);
+    @memcpy(mutable_text, text);
 
     // Transliterate
     _ = backend; // TODO: GPU transliterate
@@ -2410,7 +2411,7 @@ test "parse print expression" {
 }
 
 test "processReplacement: & expands to matched text" {
-    var output: std.ArrayListUnmanaged(u8) = .{};
+    var output = std.ArrayListUnmanaged(u8).empty;
     defer output.deinit(std.testing.allocator);
 
     try processReplacement("[&]", "hello", &output, std.testing.allocator, "hello", null);
@@ -2418,7 +2419,7 @@ test "processReplacement: & expands to matched text" {
 }
 
 test "processReplacement: escaped ampersand" {
-    var output: std.ArrayListUnmanaged(u8) = .{};
+    var output = std.ArrayListUnmanaged(u8).empty;
     defer output.deinit(std.testing.allocator);
 
     try processReplacement("\\&", "hello", &output, std.testing.allocator, "hello", null);
@@ -2426,7 +2427,7 @@ test "processReplacement: escaped ampersand" {
 }
 
 test "processReplacement: escape sequences" {
-    var output: std.ArrayListUnmanaged(u8) = .{};
+    var output = std.ArrayListUnmanaged(u8).empty;
     defer output.deinit(std.testing.allocator);
 
     try processReplacement("a\\nb\\tc", "X", &output, std.testing.allocator, "X", null);
@@ -2434,7 +2435,7 @@ test "processReplacement: escape sequences" {
 }
 
 test "processReplacement: mixed & and escapes" {
-    var output: std.ArrayListUnmanaged(u8) = .{};
+    var output = std.ArrayListUnmanaged(u8).empty;
     defer output.deinit(std.testing.allocator);
 
     try processReplacement("<&>\\n", "FOO", &output, std.testing.allocator, "FOO", null);
