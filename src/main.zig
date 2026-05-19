@@ -11,7 +11,7 @@ const SubstituteOptions = gpu.SubstituteOptions;
 // safe-transpile: function uses raw slice parameter — consider safe.String
 // safe-transpile: function returns small constant slice — consider safe.String
 fn unescapePattern(allocator: std.mem.Allocator, pattern: []const u8) ![]u8 {
-    var result: std.ArrayListUnmanaged(u8) = .{};
+    var result: std.ArrayListUnmanaged(u8) = .empty;
     errdefer result.deinit(allocator);
     var i: usize = 0;
     while (i < pattern.len) : (i += 1) {
@@ -161,23 +161,28 @@ fn processReplacement(replacement: []const u8, matched_text: []const u8, output:
     }
 }
 
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer args_iter.deinit();
+    var args: std.ArrayList([]const u8) = .empty;
+    defer args.deinit(allocator);
+    while (args_iter.next()) |arg| {
+        try args.append(allocator, arg);
+    }
+    const args_slice = args.items;
 
-    if (args.len < 2) {
-        printUsage();
+    if (args_slice.len < 2) {
+        printUsage(io);
         return;
     }
 
     var backend_mode: BackendMode = .auto;
-    var expressions: std.ArrayListUnmanaged([]const u8) = .{};
+    var expressions: std.ArrayListUnmanaged([]const u8) = .empty;
     defer expressions.deinit(allocator);
-    var files: std.ArrayListUnmanaged([]const u8) = .{};
+    var files: std.ArrayListUnmanaged([]const u8) = .empty;
     defer files.deinit(allocator);
     var verbose = false;
     var in_place_suffix: ?[]const u8 = null;
@@ -189,24 +194,19 @@ pub fn main() !void {
 
     // Parse arguments
     var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    while (i < args_slice.len) : (i += 1) {
+        const arg = args_slice[i];
         if (safe.SimdUtils.eql(arg, "-e") or safe.SimdUtils.eql(arg, "--expression")) {
-            if (i + 1 < args.len) {
+            if (i + 1 < args_slice.len) {
                 i += 1;
-                try expressions.append(allocator, args[i]);
+                try expressions.append(allocator, args_slice[i]);
                 saw_explicit_expr = true;
             }
         } else if (safe.SimdUtils.eql(arg, "-f") or safe.SimdUtils.eql(arg, "--file")) {
-            if (i + 1 < args.len) {
+            if (i + 1 < args_slice.len) {
                 i += 1;
-                const file = std.fs.cwd().openFile(args[i], .{}) catch |err| {
-                    std.debug.print("sed: {s}: {}\n", .{ args[i], err });
-                    return;
-                };
-                defer file.close();
-                const content = file.readToEndAlloc(allocator, 1024 * 1024) catch |err| {
-                    std.debug.print("sed: {s}: {}\n", .{ args[i], err });
+                const content = std.Io.Dir.cwd().readFileAlloc(io, args_slice[i], allocator, .limited(1024 * 1024)) catch |err| {
+                    std.debug.print("sed: {s}: {}\n", .{ args_slice[i], err });
                     return;
                 };
                 // safe-transpile: free removed (memory owned by safe type);
@@ -249,7 +249,7 @@ pub fn main() !void {
         } else if (safe.SimdUtils.eql(arg, "-V") or safe.SimdUtils.eql(arg, "--verbose")) {
             verbose = true;
         } else if (safe.SimdUtils.eql(arg, "-h") or safe.SimdUtils.eql(arg, "--help")) {
-            printUsage();
+            printUsage(io);
             return;
         } else if (arg[0] != '-') {
             // First non-option is expression if -e wasn't used
@@ -260,19 +260,19 @@ pub fn main() !void {
             }
         } else {
             std.debug.print("Unknown option: {s}\n", .{arg});
-            printUsage();
+            printUsage(io);
             return;
         }
     }
 
     if (expressions.items.len == 0) {
         std.debug.print("Error: No expression specified\n", .{});
-        printUsage();
+        printUsage(io);
         return;
     }
 
     // Parse all sed expressions (split on ; for multiple commands per expression)
-    var commands: std.ArrayListUnmanaged(SedCommand) = .{};
+    var commands: std.ArrayListUnmanaged(SedCommand) = .empty;
     defer commands.deinit(allocator);
 
     for (expressions.items) |expr| {
@@ -320,14 +320,14 @@ pub fn main() !void {
 
     // Process each file or stdin
     if (read_stdin) {
-        try processStdinMulti(allocator, commands.items, backend_mode, verbose, suppress_output, null_data);
+        try processStdinMulti(allocator, io, commands.items, backend_mode, verbose, suppress_output, null_data);
     } else {
         for (files.items) |filepath| {
             // Handle "-" as stdin
             if (safe.SimdUtils.eql(filepath, "-")) {
-                try processStdinMulti(allocator, commands.items, backend_mode, verbose, suppress_output, null_data);
+                try processStdinMulti(allocator, io, commands.items, backend_mode, verbose, suppress_output, null_data);
             } else {
-                try processFileMulti(allocator, filepath, commands.items, backend_mode, verbose, in_place_suffix, suppress_output, null_data);
+                try processFileMulti(allocator, io, filepath, commands.items, backend_mode, verbose, in_place_suffix, suppress_output, null_data);
             }
         }
     }
@@ -364,12 +364,12 @@ fn doFindMatches(text: []const u8, pattern: []const u8, options: SubstituteOptio
     return cpu.findMatches(text, pattern, options, allocator);
 }
 
-fn processStdin(allocator: std.mem.Allocator, cmd: SedCommand, backend_mode: BackendMode, verbose: bool, suppress_output: bool) !void {
+fn processStdin(allocator: std.mem.Allocator, io: std.Io, cmd: SedCommand, backend_mode: BackendMode, verbose: bool, suppress_output: bool) !void {
     // Read all stdin into a buffer
-    var stdin_list: std.ArrayListUnmanaged(u8) = .{};
+    var stdin_list: std.ArrayListUnmanaged(u8) = .empty;
     defer stdin_list.deinit(allocator);
 
-    var buf: [4096]u8 = .{};
+    var buf: [4096]u8 = undefined;
     var __zust_loop_counter: u64 = 0;
     while (true) {
         __zust_loop_counter += 1;
@@ -406,10 +406,10 @@ fn processStdin(allocator: std.mem.Allocator, cmd: SedCommand, backend_mode: Bac
     }
 
     switch (cmd.cmd_type) {
-        .substitute => try processSubstituteStdin(allocator, text, cmd, backend, verbose, suppress_output),
-        .delete => try processDelete(allocator, text, cmd, backend, verbose, suppress_output),
-        .print => try processPrint(allocator, text, cmd, backend, verbose, suppress_output),
-        .transliterate => try processTransliterateStdin(allocator, text, cmd, verbose, suppress_output),
+        .substitute => try processSubstituteStdin(allocator, io, text, cmd, backend, verbose, suppress_output),
+        .delete => try processDelete(allocator, io, text, cmd, backend, verbose, suppress_output),
+        .print => try processPrint(allocator, io, text, cmd, backend, verbose, suppress_output),
+        .transliterate => try processTransliterateStdin(allocator, io, text, cmd, verbose, suppress_output),
     }
 }
 
@@ -430,16 +430,14 @@ fn countLines(text: []const u8) u32 {
 /// Read file contents for sed r command
 // safe-transpile: function uses raw slice parameter — consider safe.String
 // safe-transpile: function returns small constant slice — consider safe.String
-fn readFileContents(allocator: std.mem.Allocator, filepath: []const u8) ![]u8 {
-    const file = try std.fs.cwd().openFile(filepath, .{});
-    defer file.close();
-    return try file.readToEndAlloc(allocator, 1024 * 1024);
+fn readFileContents(allocator: std.mem.Allocator, io: std.Io, filepath: []const u8) ![]u8 {
+    return try std.Io.Dir.cwd().readFileAlloc(io, filepath, allocator, .limited(1024 * 1024));
 }
 
 /// Apply a single command to text and return the result
 // safe-transpile: function uses raw slice parameter — consider safe.String
 // safe-transpile: function returns small constant slice — consider safe.String
-fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend) ![]u8 {
+fn applyCommand(allocator: std.mem.Allocator, io: std.Io, text: []const u8, cmd: SedCommand, backend: gpu.Backend) ![]u8 {
     // Count total lines for address handling
     const total_lines = countLines(text);
 
@@ -447,7 +445,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
         .substitute => {
             // If we have an address, we need to process line-by-line
             if (cmd.address) |addr| {
-                var output: std.ArrayListUnmanaged(u8) = .{};
+                var output: std.ArrayListUnmanaged(u8) = .empty;
                 errdefer output.deinit(allocator);
 
                 var line_num: u32 = 1;
@@ -528,7 +526,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
             defer result.deinit();
 
             // Build output with replacements
-            var output: std.ArrayListUnmanaged(u8) = .{};
+            var output: std.ArrayListUnmanaged(u8) = .empty;
             errdefer output.deinit(allocator);
 
             var last_pos: usize = 0;
@@ -549,7 +547,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
             // If we have an address with empty pattern, delete by line number
             if (cmd.address) |addr| {
                 if (cmd.pattern.len == 0) {
-                    var output: std.ArrayListUnmanaged(u8) = .{};
+                    var output: std.ArrayListUnmanaged(u8) = .empty;
                     errdefer output.deinit(allocator);
 
                     var line_num: u32 = 1;
@@ -580,7 +578,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
             var result = try doFindMatches(text, cmd.pattern, cmd.options, allocator);
             defer result.deinit();
 
-            var output: std.ArrayListUnmanaged(u8) = .{};
+            var output: std.ArrayListUnmanaged(u8) = .empty;
             errdefer output.deinit(allocator);
 
             // Mark lines to delete (line_num is 0-indexed from doFindMatches)
@@ -636,13 +634,13 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
         },
         .read_file => {
             // Read file contents
-            const file_content = readFileContents(allocator, cmd.file_path) catch |err| {
+            const file_content = readFileContents(allocator, io, cmd.file_path) catch |err| {
                 std.debug.print("sed: {s}: {}\n", .{ cmd.file_path, err });
                 return allocator.dupe(u8, text);
             };
             // safe-transpile: free removed (memory owned by safe type);
 
-            var output: std.ArrayListUnmanaged(u8) = .{};
+            var output: std.ArrayListUnmanaged(u8) = .empty;
             errdefer output.deinit(allocator);
 
             // Determine which lines should have file appended
@@ -694,11 +692,11 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
         },
         .write_file => {
             // Write matching lines to file, return original text unchanged
-            var file = std.fs.cwd().createFile(cmd.file_path, .{}) catch |err| {
+            var file = std.Io.Dir.cwd().createFile(io, cmd.file_path, .{}) catch |err| {
                 std.debug.print("sed: {s}: {}\n", .{ cmd.file_path, err });
                 return allocator.dupe(u8, text);
             };
-            defer file.close();
+            defer file.close(io);
 
             // Determine which lines should be written
             // If no pattern and no address, write all lines
@@ -725,7 +723,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
                     // safe-transpile: optional unwrap requires manual review
                     const should_write = match_all_lines or if (use_address) cmd.address.?.matches(line_num, total_lines) else matched_lines.contains(line_num - 1);
                     if (should_write) {
-                        try file.writeAll(text[line_start .. i + 1]);
+                        try file.writeStreamingAll(io, text[line_start .. i + 1]);
                     }
                     line_start = i + 1;
                     line_num += 1;
@@ -736,7 +734,7 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
                 // safe-transpile: optional unwrap requires manual review
                 const should_write = match_all_lines or if (use_address) cmd.address.?.matches(line_num, total_lines) else matched_lines.contains(line_num - 1);
                 if (should_write) {
-                    try file.writeAll(text[line_start..]);
+                    try file.writeStreamingAll(io, text[line_start..]);
                 }
             }
 
@@ -750,12 +748,12 @@ fn applyCommand(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
 }
 
 /// Process stdin with multiple commands
-fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand, backend_mode: BackendMode, verbose: bool, suppress_output: bool, null_data: bool) !void {
+fn processStdinMulti(allocator: std.mem.Allocator, io: std.Io, commands: []const SedCommand, backend_mode: BackendMode, verbose: bool, suppress_output: bool, null_data: bool) !void {
     // Read all stdin into a buffer
-    var stdin_list: std.ArrayListUnmanaged(u8) = .{};
+    var stdin_list: std.ArrayListUnmanaged(u8) = .empty;
     defer stdin_list.deinit(allocator);
 
-    var buf: [4096]u8 = .{};
+    var buf: [4096]u8 = undefined;
     var __zust_loop_counter: u64 = 0;
     while (true) {
         __zust_loop_counter += 1;
@@ -778,7 +776,7 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
 
     // Use line-by-line processor for n/N/q/= commands
     if (needsLineByLine(commands)) {
-        var output_buffer: std.ArrayListUnmanaged(u8) = .{};
+        var output_buffer: std.ArrayListUnmanaged(u8) = .empty;
         defer output_buffer.deinit(allocator);
 
         const writer = struct {
@@ -790,10 +788,10 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
             }
         }{ .buffer = &output_buffer, .allocator = allocator };
 
-        try processLineByLine(allocator, stdin_list.items, commands, backend_mode, verbose, suppress_output, null_data, writer);
+        try processLineByLine(allocator, io, stdin_list.items, commands, backend_mode, verbose, suppress_output, null_data, writer);
 
         if (!suppress_output) {
-            _ = std.posix.write(std.posix.STDOUT_FILENO, output_buffer.items) catch {};
+            _ = std.Io.File.stdout().writeStreamingAll(io, output_buffer.items) catch {};
         }
         if (g_sed_quit_code != 0) {
             std.process.exit(g_sed_quit_code);
@@ -802,14 +800,14 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
     }
 
     // Start with the original text
-    var current_text: safe.Slice(u8) = try allocator.dupe(u8, stdin_list.items);
+    var current_text: safe.Slice(u8) = safe.Slice(u8).fromStack(try allocator.dupe(u8, stdin_list.items));
 
     // Apply each command in sequence
     // safe-transpile: for with index access requires manual review
     for (commands, 0..) |cmd, idx| {
         const backend: gpu.Backend = switch (backend_mode) {
             // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
-            .auto => selectOptimalBackend(cmd.pattern.len, @intCast(current_text.len)),
+            .auto => selectOptimalBackend(cmd.pattern.len, @intCast(current_text.data.len)),
             .gpu_mode => if (build_options.is_macos) .metal else .vulkan,
             .cpu_mode, .cpu_gnu => .cpu,
             .metal => .metal,
@@ -820,51 +818,32 @@ fn processStdinMulti(allocator: std.mem.Allocator, commands: []const SedCommand,
             std.debug.print("Command [{d}]: {s}, Backend: {s}\n", .{ idx, @tagName(cmd.cmd_type), @tagName(backend) });
         }
 
-        const new_text = try applyCommand(allocator, current_text, cmd, backend);
+        const new_text = try applyCommand(allocator, io, current_text.data, cmd, backend);
         // safe-transpile: free removed (memory owned by safe type);
-        current_text = new_text;
+        current_text = safe.Slice(u8).fromStack(new_text);
     }
     // safe-transpile: free removed (memory owned by safe type);
 
     // Output result (unless suppressed)
     if (!suppress_output) {
-        _ = std.posix.write(std.posix.STDOUT_FILENO, current_text) catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, current_text.data) catch {};
     }
 }
 
 /// Execute text as a shell command and return stdout output
 // safe-transpile: function uses raw slice parameter — consider safe.String
 // safe-transpile: function returns small constant slice — consider safe.String
-fn executeShellCommand(allocator: std.mem.Allocator, command_text: []const u8) ![]u8 {
-    var child = std.process.Child.init(&.{ "/bin/sh", "-c", command_text }, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-
-    var output: std.ArrayListUnmanaged(u8) = .{};
-    errdefer output.deinit(allocator);
-
-    if (child.stdout) |stdout| {
-        var buf: [4096]u8 = .{};
-        var __zust_loop_counter: u64 = 0;
-        while (true) {
-            __zust_loop_counter += 1;
-            if (__zust_loop_counter > 1_000_000) return error.InfiniteLoop;
-
-            const bytes_read = stdout.read(&buf) catch break;
-            if (bytes_read == 0) break;
-            try output.appendSlice(allocator, buf[0..bytes_read]);
-        }
-    }
-
-    _ = child.wait() catch {};
+fn executeShellCommand(allocator: std.mem.Allocator, io: std.Io, command_text: []const u8) ![]u8 {
+    const result = try std.process.run(allocator, io, .{
+        .argv = &.{ "/bin/sh", "-c", command_text },
+    });
+    defer allocator.free(result.stderr);
 
     // Trim trailing newline if present (GNU sed behavior)
-    if (output.items.len > 0 and output.items[output.items.len - 1] == '\n') {
-        output.items.len -= 1;
+    if (result.stdout.len > 0 and result.stdout[result.stdout.len - 1] == '\n') {
+        return allocator.dupe(u8, result.stdout[0 .. result.stdout.len - 1]);
     }
-
-    return output.toOwnedSlice(allocator);
+    return allocator.dupe(u8, result.stdout);
 }
 
 /// Check if commands require line-by-line processing
@@ -881,7 +860,7 @@ fn needsLineByLine(commands: []const SedCommand) bool {
 
 /// Process text line-by-line with sed commands
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: []const SedCommand, _backend_mode: BackendMode, verbose: bool, suppress_output: bool, null_data: bool, out_writer: anytype) !void {
+fn processLineByLine(allocator: std.mem.Allocator, io: std.Io, text: []const u8, commands: []const SedCommand, _backend_mode: BackendMode, verbose: bool, suppress_output: bool, null_data: bool, out_writer: anytype) !void {
     _ = _backend_mode;
     const line_delim: u8 = if (null_data) 0 else '\n';
     var line_num: u32 = 1;
@@ -889,7 +868,7 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
     var quit_requested = false;
 
     // Hold space persists across lines
-    var hold_space: std.ArrayListUnmanaged(u8) = .{};
+    var hold_space: std.ArrayListUnmanaged(u8) = .empty;
     defer hold_space.deinit(allocator);
 
     // Build label map for branch commands
@@ -916,7 +895,7 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
         const line = text[pos..line_end];
 
         // Pattern space starts with current line
-        var pattern_space: std.ArrayListUnmanaged(u8) = .{};
+        var pattern_space: std.ArrayListUnmanaged(u8) = .empty;
         defer pattern_space.deinit(allocator);
         try pattern_space.appendSlice(allocator, line);
 
@@ -924,9 +903,9 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
         var should_print = !suppress_output;
         var skip_to_next = false;
         var manual_advance = false; // Set by n/N to prevent double-advance
-        var insert_texts: std.ArrayListUnmanaged([]const u8) = .{};
+        var insert_texts: std.ArrayListUnmanaged([]const u8) = .empty;
         defer insert_texts.deinit(allocator);
-        var append_texts: std.ArrayListUnmanaged([]const u8) = .{};
+        var append_texts: std.ArrayListUnmanaged([]const u8) = .empty;
         defer append_texts.deinit(allocator);
         var change_text: ?[]const u8 = null;
         var last_substitute_succeeded = false;
@@ -1011,7 +990,7 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                         // safe-transpile: free removed (memory owned by safe type);
                         var result = try doFindMatches(pattern_space.items, search_pattern, cmd.options, allocator);
                         defer result.deinit();
-                        var new_space: std.ArrayListUnmanaged(u8) = .{};
+                        var new_space: std.ArrayListUnmanaged(u8) = .empty;
                         errdefer new_space.deinit(allocator);
                         var last_p: usize = 0;
                         // safe-transpile: for with index access requires manual review
@@ -1028,7 +1007,7 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                         last_substitute_succeeded = result.matches.len > 0;
                         // s///e: execute pattern space as shell command, replace with output
                         if (cmd.options.execute and result.matches.len > 0) {
-                            const cmd_output = try executeShellCommand(allocator, pattern_space.items);
+                            const cmd_output = try executeShellCommand(allocator, io, pattern_space.items);
                             // safe-transpile: free removed (memory owned by safe type);
                             pattern_space.clearRetainingCapacity();
                             try pattern_space.appendSlice(allocator, cmd_output);
@@ -1037,14 +1016,17 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                         if (cmd.options.w_file) |w_filepath| {
                             if (result.matches.len > 0) {
                                 const w_file = blk: {
-                                    break :blk std.fs.cwd().openFile(w_filepath, .{ .mode = .read_write }) catch {
-                                        break :blk std.fs.cwd().createFile(w_filepath, .{}) catch continue;
+                                    break :blk std.Io.Dir.cwd().openFile(io, w_filepath, .{ .mode = .read_write }) catch {
+                                        break :blk std.Io.Dir.cwd().createFile(io, w_filepath, .{}) catch continue;
                                     };
                                 };
-                                w_file.seekFromEnd(0) catch {};
-                                _ = w_file.write(pattern_space.items) catch {};
-                                _ = w_file.write("\n") catch {};
-                                w_file.close();
+                                defer w_file.close(io);
+                                var w_writer = w_file.writer(io, &.{});
+                                if (w_file.stat(io)) |stat| {
+                                    w_writer.seekTo(stat.size) catch {};
+                                } else |_| {}
+                                _ = w_file.writeStreamingAll(io, pattern_space.items) catch {};
+                                _ = w_file.writeStreamingAll(io, "\n") catch {};
                             }
                         }
                     },
@@ -1077,7 +1059,7 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                                 '\x07' => try out_writer.writeAll("\\a"),
                                 else => {
                                     if (c < 32 or c > 126) {
-                                        var buf: [8]u8 = .{};
+                                        var buf: [8]u8 = undefined;
                                         const esc = std.fmt.bufPrint(&buf, "\\{o:0>3}", .{c}) catch "\\?";
                                         try out_writer.writeAll(esc);
                                     } else {
@@ -1103,7 +1085,7 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                     },
                     .read_file => {
                         if (cmd.file_path.len > 0) {
-                            const content = readFileContents(allocator, cmd.file_path) catch "";
+                            const content = readFileContents(allocator, io, cmd.file_path) catch "";
                             // safe-transpile: free removed (memory owned by safe type);
                             try out_writer.writeAll(pattern_space.items);
                             if (has_delim) try out_writer.writeAll(&[_]u8{line_delim});
@@ -1117,13 +1099,13 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                     },
                     .write_file => {
                         if (cmd.file_path.len > 0) {
-                            var f = std.fs.cwd().createFile(cmd.file_path, .{ .truncate = false }) catch |err| {
+                            var f = std.Io.Dir.cwd().createFile(io, cmd.file_path, .{ .truncate = false }) catch |err| {
                                 std.debug.print("sed: {s}: {}\n", .{ cmd.file_path, err });
                                 continue;
                             };
-                            defer f.close();
-                            try f.writeAll(pattern_space.items);
-                            if (has_delim) try f.writeAll(&[_]u8{line_delim});
+                            defer f.close(io);
+                            try f.writeStreamingAll(io, pattern_space.items);
+                            if (has_delim) try f.writeStreamingAll(io, &[_]u8{line_delim});
                         }
                     },
                     .next => {
@@ -1178,7 +1160,7 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                         quit_requested = true;
                     },
                     .line_number => {
-                        var num_buf: [16]u8 = .{};
+                        var num_buf: [16]u8 = undefined;
                         const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{line_num}) catch "";
                         try out_writer.writeAll(num_str);
                         try out_writer.writeAll(&[_]u8{line_delim});
@@ -1253,7 +1235,7 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
                         try out_writer.writeAll(&[_]u8{line_delim});
                     },
                     .execute_cmd => {
-                        const cmd_output = try executeShellCommand(allocator, pattern_space.items);
+                        const cmd_output = try executeShellCommand(allocator, io, pattern_space.items);
                         // safe-transpile: free removed (memory owned by safe type);
                         pattern_space.clearRetainingCapacity();
                         try pattern_space.appendSlice(allocator, cmd_output);
@@ -1308,25 +1290,21 @@ fn processLineByLine(allocator: std.mem.Allocator, text: []const u8, commands: [
 
 /// Process file with multiple commands
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands: []const SedCommand, backend_mode: BackendMode, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool, null_data: bool) !void {
-    const file = std.fs.cwd().openFile(filepath, .{}) catch |err| {
+fn processFileMulti(allocator: std.mem.Allocator, io: std.Io, filepath: []const u8, commands: []const SedCommand, backend_mode: BackendMode, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool, null_data: bool) !void {
+    const original_text = std.Io.Dir.cwd().readFileAlloc(io, filepath, allocator, .limited(gpu.MAX_GPU_BUFFER_SIZE)) catch |err| {
         std.debug.print("Error opening {s}: {}\n", .{ filepath, err });
         return;
     };
-    defer file.close();
-
-    const stat = try file.stat();
-    const file_size = stat.size;
+    defer allocator.free(original_text);
+    const file_size = original_text.len;
 
     if (verbose) {
         std.debug.print("File: {s} ({d} bytes)\n", .{ filepath, file_size });
     }
 
-    const original_text = try file.readToEndAlloc(allocator, gpu.MAX_GPU_BUFFER_SIZE);
-
     // Use line-by-line processor for n/N/q/= commands
     if (needsLineByLine(commands)) {
-        var output_buffer: std.ArrayListUnmanaged(u8) = .{};
+        var output_buffer: std.ArrayListUnmanaged(u8) = .empty;
         defer output_buffer.deinit(allocator);
 
         const writer = struct {
@@ -1338,7 +1316,7 @@ fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands
             }
         }{ .buffer = &output_buffer, .allocator = allocator };
 
-        try processLineByLine(allocator, original_text, commands, backend_mode, verbose, suppress_output, null_data, writer);
+        try processLineByLine(allocator, io, original_text, commands, backend_mode, verbose, suppress_output, null_data, writer);
         // safe-transpile: free removed (memory owned by safe type);
 
         // Write output
@@ -1346,13 +1324,13 @@ fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands
             if (suffix.len > 0) {
                 const backup_path = try std.mem.concat(allocator, u8, &.{ filepath, suffix });
                 // safe-transpile: free removed (memory owned by safe type);
-                try std.fs.cwd().copyFile(filepath, std.fs.cwd(), backup_path, .{});
+                try std.Io.Dir.cwd().copyFile(filepath, std.Io.Dir.cwd(), backup_path, io, .{});
             }
-            const out_file = try std.fs.cwd().createFile(filepath, .{});
-            defer out_file.close();
-            try out_file.writeAll(output_buffer.items);
+            const out_file = try std.Io.Dir.cwd().createFile(io, filepath, .{});
+            defer out_file.close(io);
+            try out_file.writeStreamingAll(io, output_buffer.items);
         } else if (!suppress_output) {
-            _ = std.posix.write(std.posix.STDOUT_FILENO, output_buffer.items) catch {};
+            _ = std.Io.File.stdout().writeStreamingAll(io, output_buffer.items) catch {};
         }
         if (g_sed_quit_code != 0) {
             std.process.exit(g_sed_quit_code);
@@ -1361,14 +1339,14 @@ fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands
     }
 
     // Start with the original text
-    var current_text: safe.Slice(u8) = original_text;
+    var current_text: safe.Slice(u8) = safe.Slice(u8).fromStack(original_text);
 
     // Apply each command in sequence
     // safe-transpile: for with index access requires manual review
     for (commands, 0..) |cmd, idx| {
         const backend: gpu.Backend = switch (backend_mode) {
             // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
-            .auto => selectOptimalBackend(cmd.pattern.len, @intCast(current_text.len)),
+            .auto => selectOptimalBackend(cmd.pattern.len, @intCast(current_text.data.len)),
             .gpu_mode => if (build_options.is_macos) .metal else .vulkan,
             .cpu_mode, .cpu_gnu => .cpu,
             .metal => .metal,
@@ -1379,9 +1357,9 @@ fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands
             std.debug.print("Command [{d}]: {s}, Backend: {s}\n", .{ idx, @tagName(cmd.cmd_type), @tagName(backend) });
         }
 
-        const new_text = try applyCommand(allocator, current_text, cmd, backend);
+        const new_text = try applyCommand(allocator, io, current_text.data, cmd, backend);
         // safe-transpile: free removed (memory owned by safe type);
-        current_text = new_text;
+        current_text = safe.Slice(u8).fromStack(new_text);
     }
     // safe-transpile: free removed (memory owned by safe type);
 
@@ -1391,18 +1369,18 @@ fn processFileMulti(allocator: std.mem.Allocator, filepath: []const u8, commands
         if (suffix.len > 0) {
             const backup_path = try std.mem.concat(allocator, u8, &.{ filepath, suffix });
             // safe-transpile: free removed (memory owned by safe type);
-            try std.fs.cwd().copyFile(filepath, std.fs.cwd(), backup_path, .{});
+            try std.Io.Dir.cwd().copyFile(filepath, std.Io.Dir.cwd(), backup_path, io, .{});
         }
-        const out_file = try std.fs.cwd().createFile(filepath, .{});
-        defer out_file.close();
-        try out_file.writeAll(current_text);
+        const out_file = try std.Io.Dir.cwd().createFile(io, filepath, .{});
+        defer out_file.close(io);
+        try out_file.writeStreamingAll(io, current_text.data);
     } else if (!suppress_output) {
-        _ = std.posix.write(std.posix.STDOUT_FILENO, current_text) catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, current_text.data) catch {};
     }
 }
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn processSubstituteStdin(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, suppress_output: bool) !void {
+fn processSubstituteStdin(allocator: std.mem.Allocator, io: std.Io, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, suppress_output: bool) !void {
     // Find matches
     var result = switch (backend) {
         .metal => blk: {
@@ -1442,7 +1420,7 @@ fn processSubstituteStdin(allocator: std.mem.Allocator, text: []const u8, cmd: S
     }
 
     // Build output with replacements
-    var output: std.ArrayListUnmanaged(u8) = .{};
+    var output: std.ArrayListUnmanaged(u8) = .empty;
     defer output.deinit(allocator);
 
     var last_pos: usize = 0;
@@ -1455,12 +1433,12 @@ fn processSubstituteStdin(allocator: std.mem.Allocator, text: []const u8, cmd: S
     try output.appendSlice(allocator, text[last_pos..]);
 
     if (!suppress_output) {
-        _ = std.posix.write(std.posix.STDOUT_FILENO, output.items) catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, output.items) catch {};
     }
 }
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn processTransliterateStdin(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, verbose: bool, suppress_output: bool) !void {
+fn processTransliterateStdin(allocator: std.mem.Allocator, io: std.Io, text: []const u8, cmd: SedCommand, verbose: bool, suppress_output: bool) !void {
     const mutable_text = try allocator.alloc(u8, text.len);
     // safe-transpile: free removed (memory owned by safe type);
     @memcpy(mutable_text, text);
@@ -1472,7 +1450,7 @@ fn processTransliterateStdin(allocator: std.mem.Allocator, text: []const u8, cmd
     }
 
     if (!suppress_output) {
-        _ = std.posix.write(std.posix.STDOUT_FILENO, mutable_text) catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, mutable_text) catch {};
     }
 }
 
@@ -2028,22 +2006,17 @@ fn parseSedExpression(expr: []const u8) !SedCommand {
 }
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn processFile(allocator: std.mem.Allocator, filepath: []const u8, cmd: SedCommand, backend_mode: BackendMode, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool) !void {
-    const file = std.fs.cwd().openFile(filepath, .{}) catch |err| {
+fn processFile(allocator: std.mem.Allocator, io: std.Io, filepath: []const u8, cmd: SedCommand, backend_mode: BackendMode, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool) !void {
+    const text = std.Io.Dir.cwd().readFileAlloc(io, filepath, allocator, .limited(gpu.MAX_GPU_BUFFER_SIZE)) catch |err| {
         std.debug.print("Error opening {s}: {}\n", .{ filepath, err });
         return;
     };
-    defer file.close();
-
-    const stat = try file.stat();
-    const file_size = stat.size;
+    defer allocator.free(text);
+    const file_size = text.len;
 
     if (verbose) {
         std.debug.print("File: {s} ({d} bytes)\n", .{ filepath, file_size });
     }
-
-    const text = try file.readToEndAlloc(allocator, gpu.MAX_GPU_BUFFER_SIZE);
-    // safe-transpile: free removed (memory owned by safe type);
 
     // Select backend
     // Note: cpu_gnu maps to .cpu backend but uses cpu_gnu module for matching
@@ -2060,10 +2033,10 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, cmd: SedComma
     }
 
     switch (cmd.cmd_type) {
-        .substitute => try processSubstitute(allocator, text, cmd, backend, verbose, in_place_suffix, suppress_output, filepath),
-        .delete => try processDelete(allocator, text, cmd, backend, verbose, suppress_output),
-        .print => try processPrint(allocator, text, cmd, backend, verbose, suppress_output),
-        .transliterate => try processTransliterate(allocator, text, cmd, backend, verbose, in_place_suffix, suppress_output, filepath),
+        .substitute => try processSubstitute(allocator, io, text, cmd, backend, verbose, in_place_suffix, suppress_output, filepath),
+        .delete => try processDelete(allocator, io, text, cmd, backend, verbose, suppress_output),
+        .print => try processPrint(allocator, io, text, cmd, backend, verbose, suppress_output),
+        .transliterate => try processTransliterate(allocator, io, text, cmd, backend, verbose, in_place_suffix, suppress_output, filepath),
     }
 }
 
@@ -2079,7 +2052,7 @@ fn selectOptimalBackend(pattern_len: usize, file_size: u64) gpu.Backend {
 }
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn processSubstitute(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool, filepath: []const u8) !void {
+fn processSubstitute(allocator: std.mem.Allocator, io: std.Io, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool, filepath: []const u8) !void {
     // Find matches
     var result = switch (backend) {
         .metal => blk: {
@@ -2124,7 +2097,7 @@ fn processSubstitute(allocator: std.mem.Allocator, text: []const u8, cmd: SedCom
     }
 
     // Build output with replacements
-    var output: std.ArrayListUnmanaged(u8) = .{};
+    var output: std.ArrayListUnmanaged(u8) = .empty;
     defer output.deinit(allocator);
 
     var last_pos: usize = 0;
@@ -2144,18 +2117,18 @@ fn processSubstitute(allocator: std.mem.Allocator, text: []const u8, cmd: SedCom
         if (suffix.len > 0) {
             const backup_path = try std.mem.concat(allocator, u8, &.{ filepath, suffix });
             // safe-transpile: free removed (memory owned by safe type);
-            try std.fs.cwd().copyFile(filepath, std.fs.cwd(), backup_path, .{});
+            try std.Io.Dir.cwd().copyFile(filepath, std.Io.Dir.cwd(), backup_path, io, .{});
         }
-        const out_file = try std.fs.cwd().createFile(filepath, .{});
-        defer out_file.close();
-        try out_file.writeAll(output.items);
+        const out_file = try std.Io.Dir.cwd().createFile(io, filepath, .{});
+        defer out_file.close(io);
+        try out_file.writeStreamingAll(io, output.items);
     } else if (!suppress_output) {
-        _ = std.posix.write(std.posix.STDOUT_FILENO, output.items) catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, output.items) catch {};
     }
 }
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn processDelete(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, suppress_output: bool) !void {
+fn processDelete(allocator: std.mem.Allocator, io: std.Io, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, suppress_output: bool) !void {
     // Find matching lines
     var result = switch (backend) {
         .metal => blk: {
@@ -2212,7 +2185,7 @@ fn processDelete(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand
         if (c == '\n' or i == text.len - 1) {
             const line_end = if (c == '\n') i + 1 else i + 1;
             if (!delete_lines.contains(line_num)) {
-                _ = std.posix.write(std.posix.STDOUT_FILENO, text[line_start..line_end]) catch {};
+                _ = std.Io.File.stdout().writeStreamingAll(io, text[line_start..line_end]) catch {};
             }
             line_start = i + 1;
             line_num += 1;
@@ -2221,7 +2194,7 @@ fn processDelete(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand
 }
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn processPrint(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, suppress_output: bool) !void {
+fn processPrint(allocator: std.mem.Allocator, io: std.Io, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, suppress_output: bool) !void {
     // Find matching lines
     var result = switch (backend) {
         .metal => blk: {
@@ -2278,7 +2251,7 @@ fn processPrint(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
         if (c == '\n' or i == text.len - 1) {
             const line_end = if (c == '\n') i + 1 else i + 1;
             if (print_lines.contains(line_num)) {
-                _ = std.posix.write(std.posix.STDOUT_FILENO, text[line_start..line_end]) catch {};
+                _ = std.Io.File.stdout().writeStreamingAll(io, text[line_start..line_end]) catch {};
             }
             line_start = i + 1;
             line_num += 1;
@@ -2287,7 +2260,7 @@ fn processPrint(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand,
 }
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn processTransliterate(allocator: std.mem.Allocator, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool, filepath: []const u8) !void {
+fn processTransliterate(allocator: std.mem.Allocator, io: std.Io, text: []const u8, cmd: SedCommand, backend: gpu.Backend, verbose: bool, in_place_suffix: ?[]const u8, suppress_output: bool, filepath: []const u8) !void {
     // Make a mutable copy
     const mutable_text = try allocator.alloc(u8, text.len);
     // safe-transpile: free removed (memory owned by safe type);
@@ -2306,17 +2279,17 @@ fn processTransliterate(allocator: std.mem.Allocator, text: []const u8, cmd: Sed
         if (suffix.len > 0) {
             const backup_path = try std.mem.concat(allocator, u8, &.{ filepath, suffix });
             // safe-transpile: free removed (memory owned by safe type);
-            try std.fs.cwd().copyFile(filepath, std.fs.cwd(), backup_path, .{});
+            try std.Io.Dir.cwd().copyFile(filepath, std.Io.Dir.cwd(), backup_path, io, .{});
         }
-        const out_file = try std.fs.cwd().createFile(filepath, .{});
-        defer out_file.close();
-        try out_file.writeAll(mutable_text);
+        const out_file = try std.Io.Dir.cwd().createFile(io, filepath, .{});
+        defer out_file.close(io);
+        try out_file.writeStreamingAll(io, mutable_text);
     } else if (!suppress_output) {
-        _ = std.posix.write(std.posix.STDOUT_FILENO, mutable_text) catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, mutable_text) catch {};
     }
 }
 
-fn printUsage() void {
+fn printUsage(io: std.Io) void {
     const help_text =
         \\Usage: sed [OPTION]... {SCRIPT} [INPUT-FILE]...
         \\
@@ -2380,7 +2353,7 @@ fn printUsage() void {
         \\  sed --gpu 's/x/y/g' large.txt       Force GPU acceleration
         \\
     ;
-    _ = std.posix.write(std.posix.STDOUT_FILENO, help_text) catch {};
+    _ = std.Io.File.stdout().writeStreamingAll(io, help_text) catch {};
 }
 
 test "parse substitute expression" {

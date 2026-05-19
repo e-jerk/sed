@@ -284,9 +284,9 @@ pub const MetalSubstituter = struct {
         defer gpu_regex.deinit();
 
         // Find line boundaries
-        var line_offsets: std.ArrayListUnmanaged(u32) = .{};
+        var line_offsets: std.ArrayListUnmanaged(u32) = .empty;
         defer line_offsets.deinit(allocator);
-        var line_lengths: std.ArrayListUnmanaged(u32) = .{};
+        var line_lengths: std.ArrayListUnmanaged(u32) = .empty;
         defer line_lengths.deinit(allocator);
 
         var line_start: usize = 0;
