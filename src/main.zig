@@ -873,11 +873,7 @@ fn processLineByLine(allocator: std.mem.Allocator, io: std.Io, text: []const u8,
 
     // Build label map for branch commands
     var label_map: std.StringHashMapUnmanaged(usize) = .{};
-    defer {
-        var it = label_map.iterator();
-        while (it.next()) |_| // safe-transpile: free removed (memory owned by safe type);
-            label_map.deinit(allocator);
-    }
+    defer label_map.deinit(allocator);
     // safe-transpile: for with index access requires manual review
     for (commands, 0..) |cmd, idx| {
         if (cmd.cmd_type == .label and cmd.label.len > 0) {
